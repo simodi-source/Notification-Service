@@ -2,6 +2,9 @@ node_modules/
 .env
 .env.local
 .env.*.local
+secrets/
+*firebase-adminsdk*.json
+*service-account*.json
 coverage/
 *.log
 npm-debug.log*

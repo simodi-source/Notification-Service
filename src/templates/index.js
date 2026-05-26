@@ -213,16 +213,47 @@ function renderTemplate(templateCode, payload, user) {
     }
     case "trade_executed": {
       const metal = payload.metal === "silver" ? "Silver" : "Gold";
-      const side = payload.side === "sell" ? "Sold" : "Bought";
+      const isBuy = payload.side !== "sell";
+      const side = isBuy ? "Bought" : "Sold";
       const grams = String(payload.gramsExact || payload.grams || "");
       const pushSummary = `You ${side.toLowerCase()} ${grams}g ${metal}.`;
       const title = `Simodi — ${side} ${metal}`;
+      const referenceLabel = payload.referenceCode
+        ? String(payload.referenceCode)
+        : payload.tradeId
+          ? String(payload.tradeId)
+          : "";
       const rows = [
         { label: "Side", value: side },
         { label: "Metal", value: metal },
         { label: "Grams", value: `${grams} g` },
       ];
-      if (payload.tradeId) rows.push({ label: "Trade reference", value: String(payload.tradeId) });
+      if (referenceLabel) rows.push({ label: "Trade reference", value: referenceLabel });
+
+      const footnote = isBuy
+        ? "Your investment certificate is attached to this email. You can also view this trade and your updated holdings in the Simodi app."
+        : "You can view this trade and your updated holdings in the Simodi app.";
+
+      // Buy-side trades ship with a Certificate of Investment PDF the worker
+      // renders just before dispatch (so the rendered file isn't kept in Redis).
+      const attachments = isBuy
+        ? [
+            {
+              type: "trade_certificate",
+              referenceCode: referenceLabel,
+              metal: payload.metal,
+              grams: payload.grams,
+              gramsExact: payload.gramsExact,
+              quoteCurrency: payload.quoteCurrency,
+              priceAedPerGramMajor: payload.priceAedPerGramMajor,
+              priceUsdPerGramMajor: payload.priceUsdPerGramMajor,
+              totalAedMajor: payload.totalAedMajor,
+              totalUsdMajor: payload.totalUsdMajor,
+              executedAt: payload.executedAt,
+            },
+          ]
+        : [];
+
       return {
         email: {
           subject: title,
@@ -233,8 +264,9 @@ function renderTemplate(templateCode, payload, user) {
             name,
             intro: "Your trade has been executed successfully. Here are the details:",
             callout: detailsCallout(rows),
-            footnote: "You can view this trade and your updated holdings in the Simodi app.",
+            footnote,
           }),
+          attachments,
         },
         push: {
           title: "Trade executed",

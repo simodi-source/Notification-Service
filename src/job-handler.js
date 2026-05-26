@@ -5,6 +5,7 @@ const emailProvider = require("./providers/email.sendgrid");
 const pushProvider = require("./providers/push.fcm");
 const smsProvider = require("./providers/sms.twilio");
 const whatsappProvider = require("./providers/whatsapp.twilio");
+const { buildCertificatePdf, safeFilename: certificateFilename } = require("./services/certificate.service");
 const { env } = require("./config/env");
 const { createRedisConnection } = require("./queue/connection");
 const { validateNotificationJob } = require("./queue/job-contract");
@@ -67,7 +68,14 @@ async function handleNotificationJob(job) {
         if (!to) throw new Error("No email address for notification");
         const emailContent = rendered.email;
         if (!emailContent) throw new Error(`Template ${templateCode} has no email content`);
-        const result = await emailProvider.send({ to, ...emailContent });
+        const attachments = await materializeAttachments(emailContent.attachments);
+        const result = await emailProvider.send({
+          to,
+          subject: emailContent.subject,
+          html: emailContent.html,
+          text: emailContent.text,
+          attachments,
+        });
         await writeLog({
           userId: userOid,
           event,
@@ -155,6 +163,59 @@ async function handleNotificationJob(job) {
   if (errors.length > 0 && errors.length === enabledChannels.length) {
     throw new Error(`All channels failed: ${errors.map((e) => `${e.channel}: ${e.message}`).join("; ")}`);
   }
+}
+
+/**
+ * Turns lightweight attachment descriptors emitted by templates into the
+ * Buffer-backed shape SendGrid expects. We render PDFs lazily here (rather than
+ * during enqueue) so the worker can fail/retry without bloating Redis with
+ * pre-encoded blobs.
+ *
+ * @param {Array<Record<string, unknown>> | undefined} descriptors
+ * @returns {Promise<Array<{ content: Buffer, filename: string, type: string }>>}
+ */
+async function materializeAttachments(descriptors) {
+  if (!Array.isArray(descriptors) || descriptors.length === 0) return [];
+  const out = [];
+  for (const desc of descriptors) {
+    if (!desc || typeof desc !== "object") continue;
+    if (desc.type === "trade_certificate") {
+      try {
+        const pdf = await buildCertificatePdf({
+          referenceCode: desc.referenceCode,
+          tradeId: desc.tradeId,
+          metal: desc.metal,
+          grams: desc.grams,
+          gramsExact: desc.gramsExact,
+          quoteCurrency: desc.quoteCurrency,
+          priceAedPerGramMajor: desc.priceAedPerGramMajor,
+          priceUsdPerGramMajor: desc.priceUsdPerGramMajor,
+          totalAedMajor: desc.totalAedMajor,
+          totalUsdMajor: desc.totalUsdMajor,
+          executedAt: desc.executedAt,
+        });
+        out.push({
+          content: pdf,
+          filename: certificateFilename(desc.referenceCode || desc.tradeId),
+          type: "application/pdf",
+        });
+      } catch (err) {
+        // Don't block the email if the certificate render fails — log and
+        // continue without the attachment. The customer still gets the trade
+        // confirmation; ops can investigate the render failure separately.
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(
+          JSON.stringify({
+            level: "error",
+            msg: "certificate render failed",
+            referenceCode: desc.referenceCode || desc.tradeId,
+            error: message,
+          }),
+        );
+      }
+    }
+  }
+  return out;
 }
 
 async function assertOtpRateLimit(userId, recipientEmail, idempotencyKey) {
