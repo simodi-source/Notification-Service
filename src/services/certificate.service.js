@@ -20,15 +20,15 @@
 const path = require("path");
 const PDFDocument = require("pdfkit");
 
+const ASSET_HEADER = path.join(__dirname, "..", "assets", "certificate-header.png");
 const ASSET_WATERMARK = path.join(__dirname, "..", "assets", "certificate-watermark.png");
 
 // A4 in PDF points (72dpi)
 const PAGE_W = 595.28;
 const PAGE_H = 841.89;
 
-// Vertical offset reserved for the top wordmark / brand area before the
-// "CERTIFICATE OF INVESTMENT" title block starts.
-const HEADER_HEIGHT = 110;
+// Header asset is 1785 × 663 → scaled to full page width keeps its native aspect.
+const HEADER_HEIGHT = (PAGE_W * 663) / 1785;
 
 // Body uses a vertical gradient from a lighter gold at the top to a richer
 // gold at the bottom — matches the values supplied by the design team.
@@ -37,7 +37,6 @@ const COLOR_BODY_BOTTOM = "#C39E52";
 const COLOR_TEXT = "#1f1a13"; // near-black brown
 const COLOR_ACCENT = "#7a5d2e"; // muted gold for reference code
 const COLOR_DIVIDER = "#2c2418"; // dark divider line
-const COLOR_BRAND_DARK = "#1f1a13"; // wordmark colour on the gold background
 
 // English month abbreviations — `Intl.DateTimeFormat("en-GB")` returns
 // "Sept" for September which doesn't match the design, so we format manually.
@@ -201,26 +200,10 @@ function buildCertificatePdf(input) {
     );
     doc.restore();
 
-    // 3. Brand wordmark at the top — drawn directly on the gold gradient so
-    //    there is no dark header band breaking the gradient.
-    doc
-      .font("Times-Bold")
-      .fontSize(34)
-      .fillColor(COLOR_BRAND_DARK)
-      .text("SIMODI", 0, 38, {
-        align: "center",
-        width: PAGE_W,
-        characterSpacing: 6,
-      });
-    doc
-      .font("Times-Roman")
-      .fontSize(12)
-      .fillColor(COLOR_BRAND_DARK)
-      .text("G O L D", 0, 78, {
-        align: "center",
-        width: PAGE_W,
-        characterSpacing: 6,
-      });
+    // 3. Header artwork — transparent PNG with the SIMODI Gold logo and the
+    //    gold curve wave. Drawn at full page width on top of the gradient so
+    //    only the logo + curves are visible (no dark backdrop).
+    doc.image(ASSET_HEADER, 0, 0, { width: PAGE_W });
 
     // 4. Title — "CERTIFICATE" serif headline
     let y = HEADER_HEIGHT + 70;
