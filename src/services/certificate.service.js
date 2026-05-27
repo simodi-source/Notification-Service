@@ -134,6 +134,22 @@ function safeFilename(referenceCode) {
 }
 
 /**
+ * Treats Mongo ObjectId-shaped strings (24 hex chars) as "no reference" so the
+ * certificate never displays an internal ID even if an upstream producer leaks
+ * one into the `referenceCode` slot.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function sanitizeReferenceCode(value) {
+  if (value === null || value === undefined) return "";
+  const trimmed = String(value).trim();
+  if (!trimmed) return "";
+  if (/^[a-f0-9]{24}$/i.test(trimmed)) return "";
+  return trimmed;
+}
+
+/**
  * @param {{
  *   referenceCode?: string,
  *   tradeId?: string,
@@ -153,10 +169,11 @@ function buildCertificatePdf(input) {
   const metalKey = input.metal === "silver" ? "silver" : "gold";
   const metalLabel = METAL_LABEL[metalKey];
   const grams = formatGrams(input);
-  // ONLY the human-readable referenceCode is acceptable on the certificate;
-  // we never fall back to the Mongo ObjectId (`tradeId`) so the chip can't
-  // accidentally show a 24-char hash like `#6A157D21B3F5005386EC2B82`.
-  const rawRef = (input.referenceCode || "").toString().trim();
+  // ONLY the human-readable referenceCode is acceptable on the certificate.
+  // `sanitizeReferenceCode` also drops Mongo ObjectId-shaped values so the
+  // chip can never accidentally render a 24-char hash like
+  // `#6A157D21B3F5005386EC2B82` even if upstream leaks one into this field.
+  const rawRef = sanitizeReferenceCode(input.referenceCode);
   const refDisplay = rawRef ? `#${rawRef.toUpperCase()}` : "";
   const currency = resolveCurrency(input);
   const pricePerGram = formatMoney(resolvePricePerGram(input, currency), currency);

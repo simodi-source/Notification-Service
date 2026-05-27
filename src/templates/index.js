@@ -20,6 +20,24 @@ function escapeHtml(s) {
     .replace(/"/g, "&quot;");
 }
 
+/**
+ * Returns the value when it is a real human-readable trade reference
+ * (e.g. "BUY00000123" or "SEL00000007"), and returns null when the value is
+ * missing or shaped like a Mongo ObjectId (24 hex chars). We use this anywhere
+ * a customer-visible string is rendered, so an upstream regression on the
+ * backend can never leak an internal ObjectId into the email/certificate.
+ *
+ * @param {unknown} value
+ * @returns {string | null}
+ */
+function sanitizeHumanReference(value) {
+  if (value === null || value === undefined) return null;
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+  if (/^[a-f0-9]{24}$/i.test(trimmed)) return null;
+  return trimmed;
+}
+
 function logoBlock() {
   const logoUrl = env.MAIL_BRAND_LOGO_URL;
   if (logoUrl) {
@@ -218,17 +236,17 @@ function renderTemplate(templateCode, payload, user) {
       const grams = String(payload.gramsExact || payload.grams || "");
       const pushSummary = `You ${side.toLowerCase()} ${grams}g ${metal}.`;
       const title = `Simodi — ${side} ${metal}`;
-      const referenceLabel = payload.referenceCode
-        ? String(payload.referenceCode)
-        : payload.tradeId
-          ? String(payload.tradeId)
-          : "";
+      // Reference label for the EMAIL body only — never fall back to the Mongo
+      // ObjectId here. The certificate's reference code is a separate field;
+      // see attachments below, where we forward `referenceCode` untouched so
+      // the worker's enrichment step can hydrate it from Mongo when missing.
+      const humanReferenceCode = sanitizeHumanReference(payload.referenceCode);
       const rows = [
         { label: "Side", value: side },
         { label: "Metal", value: metal },
         { label: "Grams", value: `${grams} g` },
       ];
-      if (referenceLabel) rows.push({ label: "Trade reference", value: referenceLabel });
+      if (humanReferenceCode) rows.push({ label: "Trade reference", value: humanReferenceCode });
 
       const footnote = isBuy
         ? "Your investment certificate is attached to this email. You can also view this trade and your updated holdings in the Simodi app."
@@ -236,11 +254,14 @@ function renderTemplate(templateCode, payload, user) {
 
       // Buy-side trades ship with a Certificate of Investment PDF the worker
       // renders just before dispatch (so the rendered file isn't kept in Redis).
+      // We pass the raw tradeId so the worker can look the order up in Mongo
+      // when the producing backend hasn't sent the enriched fields.
       const attachments = isBuy
         ? [
             {
               type: "trade_certificate",
-              referenceCode: referenceLabel,
+              referenceCode: humanReferenceCode || null,
+              tradeId: payload.tradeId ? String(payload.tradeId) : null,
               metal: payload.metal,
               grams: payload.grams,
               gramsExact: payload.gramsExact,

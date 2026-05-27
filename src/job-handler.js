@@ -222,21 +222,29 @@ async function materializeAttachments(descriptors) {
  * @returns {Promise<Record<string, any>>}
  */
 async function enrichTradeCertificateDescriptor(desc) {
+  // A reference that *looks* like a Mongo ObjectId (24 hex chars) is treated
+  // as missing — that protects us from older producers that accidentally sent
+  // `referenceCode: tradeId` as a fallback. We always re-resolve in that case.
+  const humanRef = looksLikeObjectId(desc.referenceCode) ? null : desc.referenceCode || null;
+
   const needsLookup =
-    !desc.referenceCode ||
+    !humanRef ||
     desc.priceAedPerGramMajor == null ||
     desc.totalAedMajor == null ||
     !desc.executedAt;
 
-  if (!needsLookup) return desc;
-  if (!desc.tradeId || !mongoose.isValidObjectId(desc.tradeId)) return desc;
+  if (!needsLookup) return { ...desc, referenceCode: humanRef };
+  if (!desc.tradeId || !mongoose.isValidObjectId(desc.tradeId)) {
+    return { ...desc, referenceCode: humanRef };
+  }
 
   try {
     const order = await mongoose.connection
       .collection("trade_orders")
       .findOne({ _id: new mongoose.Types.ObjectId(String(desc.tradeId)) });
-    if (!order) return desc;
+    if (!order) return { ...desc, referenceCode: humanRef };
 
+    const orderRef = looksLikeObjectId(order.referenceCode) ? null : order.referenceCode || null;
     const aedFils = Number(order.fiatAmountMinor || 0);
     const aedMajor = aedFils / 100;
     const fx = Number(order.fxRateUsed);
@@ -252,7 +260,7 @@ async function enrichTradeCertificateDescriptor(desc) {
 
     return {
       ...desc,
-      referenceCode: desc.referenceCode || order.referenceCode || null,
+      referenceCode: humanRef || orderRef || null,
       quoteCurrency: desc.quoteCurrency || order.quoteCurrency || "AED",
       priceAedPerGramMajor:
         desc.priceAedPerGramMajor != null
@@ -283,8 +291,15 @@ async function enrichTradeCertificateDescriptor(desc) {
         error: message,
       }),
     );
-    return desc;
+    return { ...desc, referenceCode: humanRef };
   }
+}
+
+/** 24 hex chars → looks like a Mongo ObjectId; should never appear on a certificate. */
+function looksLikeObjectId(value) {
+  if (value === null || value === undefined) return false;
+  const s = String(value).trim();
+  return /^[a-f0-9]{24}$/i.test(s);
 }
 
 async function assertOtpRateLimit(userId, recipientEmail, idempotencyKey) {
