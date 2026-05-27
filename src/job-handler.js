@@ -181,22 +181,13 @@ async function materializeAttachments(descriptors) {
     if (!desc || typeof desc !== "object") continue;
     if (desc.type === "trade_certificate") {
       try {
-        const pdf = await buildCertificatePdf({
-          referenceCode: desc.referenceCode,
-          tradeId: desc.tradeId,
-          metal: desc.metal,
-          grams: desc.grams,
-          gramsExact: desc.gramsExact,
-          quoteCurrency: desc.quoteCurrency,
-          priceAedPerGramMajor: desc.priceAedPerGramMajor,
-          priceUsdPerGramMajor: desc.priceUsdPerGramMajor,
-          totalAedMajor: desc.totalAedMajor,
-          totalUsdMajor: desc.totalUsdMajor,
-          executedAt: desc.executedAt,
-        });
+        // Backfill any missing fields straight from Mongo so the certificate is
+        // complete even when the producing backend predates the enriched payload.
+        const enriched = await enrichTradeCertificateDescriptor(desc);
+        const pdf = await buildCertificatePdf(enriched);
         out.push({
           content: pdf,
-          filename: certificateFilename(desc.referenceCode || desc.tradeId),
+          filename: certificateFilename(enriched.referenceCode || enriched.tradeId),
           type: "application/pdf",
         });
       } catch (err) {
@@ -216,6 +207,84 @@ async function materializeAttachments(descriptors) {
     }
   }
   return out;
+}
+
+/**
+ * If the queue payload is missing any of the human-readable fields the
+ * certificate needs (referenceCode, prices, totals, executedAt), we look the
+ * trade order up in MongoDB directly and fill the gaps.
+ *
+ * Querying the raw `trade_orders` collection here (instead of declaring a full
+ * mongoose model) keeps the notification-service decoupled from the backend's
+ * schema definitions while still benefitting from the shared Mongo connection.
+ *
+ * @param {Record<string, any>} desc
+ * @returns {Promise<Record<string, any>>}
+ */
+async function enrichTradeCertificateDescriptor(desc) {
+  const needsLookup =
+    !desc.referenceCode ||
+    desc.priceAedPerGramMajor == null ||
+    desc.totalAedMajor == null ||
+    !desc.executedAt;
+
+  if (!needsLookup) return desc;
+  if (!desc.tradeId || !mongoose.isValidObjectId(desc.tradeId)) return desc;
+
+  try {
+    const order = await mongoose.connection
+      .collection("trade_orders")
+      .findOne({ _id: new mongoose.Types.ObjectId(String(desc.tradeId)) });
+    if (!order) return desc;
+
+    const aedFils = Number(order.fiatAmountMinor || 0);
+    const aedMajor = aedFils / 100;
+    const fx = Number(order.fxRateUsed);
+    const fxValid = Number.isFinite(fx) && fx > 0;
+    const usdMajor = fxValid ? aedMajor / fx : null;
+    const priceAed = Number(order.priceAedPerGram);
+    const priceUsd =
+      order.priceUsdPerGram !== null && order.priceUsdPerGram !== undefined
+        ? Number(order.priceUsdPerGram)
+        : fxValid && Number.isFinite(priceAed)
+          ? priceAed / fx
+          : null;
+
+    return {
+      ...desc,
+      referenceCode: desc.referenceCode || order.referenceCode || null,
+      quoteCurrency: desc.quoteCurrency || order.quoteCurrency || "AED",
+      priceAedPerGramMajor:
+        desc.priceAedPerGramMajor != null
+          ? desc.priceAedPerGramMajor
+          : Number.isFinite(priceAed)
+            ? priceAed
+            : null,
+      priceUsdPerGramMajor:
+        desc.priceUsdPerGramMajor != null ? desc.priceUsdPerGramMajor : priceUsd,
+      totalAedMajor:
+        desc.totalAedMajor != null
+          ? desc.totalAedMajor
+          : Number.isFinite(aedMajor)
+            ? aedMajor
+            : null,
+      totalUsdMajor: desc.totalUsdMajor != null ? desc.totalUsdMajor : usdMajor,
+      executedAt:
+        desc.executedAt ||
+        (order.createdAt ? new Date(order.createdAt).toISOString() : null),
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(
+      JSON.stringify({
+        level: "warn",
+        msg: "certificate enrichment lookup failed",
+        tradeId: desc.tradeId,
+        error: message,
+      }),
+    );
+    return desc;
+  }
 }
 
 async function assertOtpRateLimit(userId, recipientEmail, idempotencyKey) {

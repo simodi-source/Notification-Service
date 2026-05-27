@@ -391,8 +391,7 @@ function buildCertificatePdf(input) {
       .fontSize(8)
       .fillColor(COLOR_TEXT)
       .text(
-        "This is a digitally generated certificate issued by Simodi Gold. " +
-          "It is electronically authenticated and does not require a physical signature.",
+        "This is a digitally generated certificate issued by Simodi Gold and does not require a physical signature.",
         padding,
         PAGE_H - 45,
         { width: PAGE_W - padding * 2, align: "center" },
