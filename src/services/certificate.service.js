@@ -153,8 +153,11 @@ function buildCertificatePdf(input) {
   const metalKey = input.metal === "silver" ? "silver" : "gold";
   const metalLabel = METAL_LABEL[metalKey];
   const grams = formatGrams(input);
-  const rawRef = (input.referenceCode || input.tradeId || "").toString().trim();
-  const refDisplay = rawRef ? `#${rawRef.toUpperCase()}` : "#SIMODI";
+  // ONLY the human-readable referenceCode is acceptable on the certificate;
+  // we never fall back to the Mongo ObjectId (`tradeId`) so the chip can't
+  // accidentally show a 24-char hash like `#6A157D21B3F5005386EC2B82`.
+  const rawRef = (input.referenceCode || "").toString().trim();
+  const refDisplay = rawRef ? `#${rawRef.toUpperCase()}` : "";
   const currency = resolveCurrency(input);
   const pricePerGram = formatMoney(resolvePricePerGram(input, currency), currency);
   const totalPrice = formatMoney(resolveTotalMajor(input, currency), currency);
@@ -224,17 +227,20 @@ function buildCertificatePdf(input) {
       characterSpacing: 4,
     });
 
-    // 5. Reference code chip (small, gold)
+    // 5. Reference code chip (small, gold) — only rendered when we have a
+    //    real human-readable code; we never show the ObjectId here.
     y += 56;
-    doc
-      .font("Helvetica-Bold")
-      .fontSize(13)
-      .fillColor(COLOR_ACCENT)
-      .text(refDisplay, 0, y, {
-        align: "center",
-        width: PAGE_W,
-        characterSpacing: 1.5,
-      });
+    if (refDisplay) {
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(13)
+        .fillColor(COLOR_ACCENT)
+        .text(refDisplay, 0, y, {
+          align: "center",
+          width: PAGE_W,
+          characterSpacing: 1.5,
+        });
+    }
 
     // 6. Headline grams + metal
     y += 22;
@@ -258,16 +264,18 @@ function buildCertificatePdf(input) {
 
     // 8. Description paragraph
     y += 16;
+    const descriptionText = refDisplay
+      ? `This is to certify that the investment under reference ${refDisplay} has been successfully recorded in Simodi ${metalLabel} on the below mentioned date.`
+      : `This is to certify that the investment has been successfully recorded in Simodi ${metalLabel} on the below mentioned date.`;
     doc
       .font("Helvetica")
       .fontSize(10)
       .fillColor(COLOR_TEXT)
-      .text(
-        `This is to certify that ${refDisplay} has successfully invested in Simodi ${metalLabel} on the below mentioned date.`,
-        60,
-        y,
-        { width: PAGE_W - 120, align: "left", lineGap: 1 },
-      );
+      .text(descriptionText, 60, y, {
+        width: PAGE_W - 120,
+        align: "left",
+        lineGap: 1,
+      });
 
     // 9. Investment details block
     y += 42;
@@ -298,11 +306,24 @@ function buildCertificatePdf(input) {
       y += 18;
     }
 
-    // 10. Date / Signature underlines near the page foot
-    const lineY = PAGE_H - 90;
-    const lineWidth = 160;
+    // 10. Footer block: filled DATE line on the left, digital-signature stamp
+    //     on the right (replaces the empty SIGNATURE underline), and a small
+    //     verification disclaimer beneath both.
+    const lineY = PAGE_H - 95;
+    const lineWidth = 170;
     const padding = 60;
 
+    // Left side — date written on the line, label below
+    doc
+      .font("Helvetica")
+      .fontSize(11)
+      .fillColor(COLOR_TEXT)
+      .text(
+        transactionDate || "—",
+        padding,
+        lineY - 16,
+        { width: lineWidth, align: "center" },
+      );
     doc
       .moveTo(padding, lineY)
       .lineTo(padding + lineWidth, lineY)
@@ -313,20 +334,81 @@ function buildCertificatePdf(input) {
       .font("Helvetica")
       .fontSize(9)
       .fillColor(COLOR_TEXT)
-      .text("DATE", padding + lineWidth / 2 - 18, lineY + 6, {
+      .text("DATE", padding, lineY + 6, {
+        width: lineWidth,
+        align: "center",
         characterSpacing: 2,
       });
 
+    // Right side — digital signature stamp instead of an empty underline.
+    // Uses a thin rounded rectangle so it visually reads as an official seal.
+    const stampX = PAGE_W - padding - lineWidth;
+    const stampY = lineY - 32;
+    const stampH = 36;
     doc
-      .moveTo(PAGE_W - padding - lineWidth, lineY)
-      .lineTo(PAGE_W - padding, lineY)
+      .save()
+      .roundedRect(stampX, stampY, lineWidth, stampH, 4)
+      .lineWidth(1)
+      .strokeColor(COLOR_DIVIDER)
       .stroke();
-    doc.text(
-      "SIGNATURE",
-      PAGE_W - padding - lineWidth / 2 - 28,
-      lineY + 6,
-      { characterSpacing: 2 },
-    );
+    // Checkmark glyph + label inside the stamp
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(10)
+      .fillColor(COLOR_TEXT)
+      .text(
+        "DIGITALLY SIGNED",
+        stampX,
+        stampY + 7,
+        { width: lineWidth, align: "center", characterSpacing: 1.5 },
+      );
+    doc
+      .font("Helvetica")
+      .fontSize(8)
+      .fillColor(COLOR_TEXT)
+      .text(
+        "by Simodi Gold",
+        stampX,
+        stampY + 21,
+        { width: lineWidth, align: "center" },
+      );
+    doc.restore();
+    doc
+      .font("Helvetica")
+      .fontSize(9)
+      .fillColor(COLOR_TEXT)
+      .text("SIGNATURE", stampX, lineY + 6, {
+        width: lineWidth,
+        align: "center",
+        characterSpacing: 2,
+      });
+
+    // Bottom disclaimer + verification line for traceability. The verification
+    // line is omitted entirely when no human-readable reference exists, so the
+    // certificate never advertises a missing/blank trace ID.
+    doc
+      .font("Helvetica")
+      .fontSize(8)
+      .fillColor(COLOR_TEXT)
+      .text(
+        "This is a digitally generated certificate issued by Simodi Gold. " +
+          "It is electronically authenticated and does not require a physical signature.",
+        padding,
+        PAGE_H - 45,
+        { width: PAGE_W - padding * 2, align: "center" },
+      );
+    if (refDisplay) {
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(8)
+        .fillColor(COLOR_TEXT)
+        .text(
+          `Verification reference: ${refDisplay}   |   Issued: ${transactionDate || formatDate(new Date())}`,
+          padding,
+          PAGE_H - 30,
+          { width: PAGE_W - padding * 2, align: "center", characterSpacing: 0.5 },
+        );
+    }
 
     doc.end();
   });
