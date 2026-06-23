@@ -6,10 +6,16 @@ const OTP_EXPIRY_MINUTES = 5;
 const EVENT_CHANNELS = {
   "auth.otp": ["email"],
   "auth.password_reset": ["email"],
+  "wallet.withdrawal_otp": ["email"],
   "kyc.approved": ["email", "push"],
   "kyc.rejected": ["email", "push"],
   "trade.executed": ["email", "push"],
   "wallet.deposit_approved": ["email", "push"],
+  "mart.order.confirmed": ["email", "push"],
+  "mart.order.packed": ["email", "push"],
+  "mart.order.shipped": ["email", "push"],
+  "mart.order.delivered": ["email", "push"],
+  "mart.order.cancelled": ["email", "push"],
 };
 
 function escapeHtml(s) {
@@ -182,6 +188,29 @@ function renderTemplate(templateCode, payload, user) {
         push: null,
       };
     }
+    case "wallet_withdrawal_otp": {
+      const title = "Simodi — Withdrawal verification";
+      return {
+        email: {
+          subject: title,
+          html: brandedEmail({
+            title,
+            eyebrow: "Withdrawal verification",
+            heading: "Confirm your withdrawal request",
+            name,
+            intro:
+              "We received a request to withdraw funds from your Simodi wallet. Enter the verification code below in the app to submit your withdrawal.",
+            callout: otpCallout(String(payload.otpCode || "")),
+            paragraphs: [
+              `This code expires in ${OTP_EXPIRY_MINUTES} minutes and can be used only once.`,
+            ],
+            footnote:
+              "If you did not request a withdrawal, please ignore this email and contact our support team immediately. Never share this code with anyone, including Simodi staff.",
+          }),
+        },
+        push: null,
+      };
+    }
     case "kyc_approved": {
       const title = "Simodi — Identity verification approved";
       return {
@@ -317,6 +346,153 @@ function renderTemplate(templateCode, payload, user) {
           title: "Deposit approved",
           body: "Your wallet deposit has been credited.",
           data: { type: "wallet.deposit_approved", paymentId: String(payload.paymentId || "") },
+        },
+      };
+    }
+    case "mart_order_confirmed": {
+      const orderCode = payload.orderCode ? String(payload.orderCode) : "";
+      const title = "Simodi — Order confirmed";
+      const rows = [];
+      if (orderCode) rows.push({ label: "Order", value: orderCode });
+      return {
+        email: {
+          subject: title,
+          html: brandedEmail({
+            title,
+            eyebrow: "Order update",
+            heading: "Your order is confirmed",
+            name,
+            intro: `Thank you for your purchase. Your order ${orderCode} has been confirmed and is now being prepared.`,
+            callout: detailsCallout(rows),
+            footnote: "You can track your order status anytime in the Simodi app.",
+          }),
+        },
+        push: {
+          title: "Order confirmed",
+          body: orderCode ? `Order ${orderCode} is confirmed and being prepared.` : "Your order is confirmed and being prepared.",
+          data: { type: "mart.order.confirmed", orderId: String(payload.orderId || ""), orderCode },
+        },
+      };
+    }
+    case "mart_order_packed": {
+      const orderCode = payload.orderCode ? String(payload.orderCode) : "";
+      const title = "Simodi — Order packed";
+      const rows = [];
+      if (orderCode) rows.push({ label: "Order", value: orderCode });
+      return {
+        email: {
+          subject: title,
+          html: brandedEmail({
+            title,
+            eyebrow: "Order update",
+            heading: "Your order is packed",
+            name,
+            intro: `Good news — your order ${orderCode} has been packed and is ready to ship.`,
+            callout: detailsCallout(rows),
+            footnote: "We'll let you know as soon as it's on its way.",
+          }),
+        },
+        push: {
+          title: "Order packed",
+          body: orderCode ? `Order ${orderCode} has been packed and is ready to ship.` : "Your order has been packed.",
+          data: { type: "mart.order.packed", orderId: String(payload.orderId || ""), orderCode },
+        },
+      };
+    }
+    case "mart_order_shipped": {
+      const orderCode = payload.orderCode ? String(payload.orderCode) : "";
+      const courier = payload.courierName ? String(payload.courierName) : null;
+      const tracking = payload.trackingNumber ? String(payload.trackingNumber) : null;
+      const title = "Simodi — Order shipped";
+      const rows = [];
+      if (orderCode) rows.push({ label: "Order", value: orderCode });
+      if (courier) rows.push({ label: "Courier", value: courier });
+      if (tracking) rows.push({ label: "Tracking number", value: tracking });
+      return {
+        email: {
+          subject: title,
+          html: brandedEmail({
+            title,
+            eyebrow: "Order update",
+            heading: "Your order is on its way",
+            name,
+            intro: `Your order ${orderCode} has been shipped.`,
+            callout: detailsCallout(rows),
+            footnote: "Use the tracking details above to follow your delivery.",
+          }),
+        },
+        push: {
+          title: "Order shipped",
+          body: tracking
+            ? `Order ${orderCode} shipped${courier ? ` via ${courier}` : ""}. Tracking: ${tracking}.`
+            : orderCode
+              ? `Order ${orderCode} has been shipped.`
+              : "Your order has been shipped.",
+          data: {
+            type: "mart.order.shipped",
+            orderId: String(payload.orderId || ""),
+            orderCode,
+            courierName: courier || "",
+            trackingNumber: tracking || "",
+          },
+        },
+      };
+    }
+    case "mart_order_delivered": {
+      const orderCode = payload.orderCode ? String(payload.orderCode) : "";
+      const title = "Simodi — Order delivered";
+      const rows = [];
+      if (orderCode) rows.push({ label: "Order", value: orderCode });
+      return {
+        email: {
+          subject: title,
+          html: brandedEmail({
+            title,
+            eyebrow: "Order update",
+            heading: "Your order has been delivered",
+            name,
+            intro: `Your order ${orderCode} has been delivered. We hope you love it.`,
+            callout: detailsCallout(rows),
+            footnote: "Thank you for shopping with Simodi.",
+          }),
+        },
+        push: {
+          title: "Order delivered",
+          body: orderCode ? `Order ${orderCode} has been delivered.` : "Your order has been delivered.",
+          data: { type: "mart.order.delivered", orderId: String(payload.orderId || ""), orderCode },
+        },
+      };
+    }
+    case "mart_order_cancelled": {
+      const orderCode = payload.orderCode ? String(payload.orderCode) : "";
+      const reason = payload.reason ? String(payload.reason) : null;
+      const title = "Simodi — Order cancelled";
+      const rows = [];
+      if (orderCode) rows.push({ label: "Order", value: orderCode });
+      if (reason) rows.push({ label: "Reason", value: reason });
+      return {
+        email: {
+          subject: title,
+          html: brandedEmail({
+            title,
+            eyebrow: "Order update",
+            heading: "Your order has been cancelled",
+            name,
+            intro: reason
+              ? `Your order ${orderCode} has been cancelled: ${reason}.`
+              : `Your order ${orderCode} has been cancelled.`,
+            callout: detailsCallout(rows),
+            footnote: "If you have any questions, our support team is here to help.",
+          }),
+        },
+        push: {
+          title: "Order cancelled",
+          body: reason
+            ? `Order ${orderCode} was cancelled: ${reason}.`
+            : orderCode
+              ? `Order ${orderCode} has been cancelled.`
+              : "Your order has been cancelled.",
+          data: { type: "mart.order.cancelled", orderId: String(payload.orderId || ""), orderCode },
         },
       };
     }

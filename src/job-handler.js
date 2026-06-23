@@ -27,7 +27,7 @@ async function handleNotificationJob(job) {
     recipientEmail,
   } = job.data;
 
-  if (event === "auth.otp" || event === "auth.password_reset") {
+  if (event === "auth.otp" || event === "auth.password_reset" || event === "wallet.withdrawal_otp") {
     await assertOtpRateLimit(userId, recipientEmail, idempotencyKey);
   }
 
