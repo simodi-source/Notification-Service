@@ -9,8 +9,16 @@ const EVENT_CHANNELS = {
   "wallet.withdrawal_otp": ["email"],
   "kyc.approved": ["email", "push"],
   "kyc.rejected": ["email", "push"],
+  "bank.verification.approved": ["email", "push"],
+  "bank.verification.rejected": ["email", "push"],
   "trade.executed": ["email", "push"],
+  "trade.failed": ["email", "push"],
   "wallet.deposit_approved": ["email", "push"],
+  "wallet.deposit_rejected": ["email", "push"],
+  "wallet.withdrawal_paid": ["email", "push"],
+  "wallet.withdrawal_failed": ["email", "push"],
+  "gift.sent": ["email", "push"],
+  "gift.received": ["email", "push"],
   "mart.order.confirmed": ["email", "push"],
   "mart.order.packed": ["email", "push"],
   "mart.order.shipped": ["email", "push"],
@@ -42,6 +50,18 @@ function sanitizeHumanReference(value) {
   if (!trimmed) return null;
   if (/^[a-f0-9]{24}$/i.test(trimmed)) return null;
   return trimmed;
+}
+
+function metalLabel(metal) {
+  return metal === "silver" ? "Silver" : "Gold";
+}
+
+function formatPayoutMajor(amountMinor, currency) {
+  if (amountMinor === null || amountMinor === undefined || !Number.isFinite(Number(amountMinor))) {
+    return null;
+  }
+  const cur = currency ? String(currency).trim() : "AED";
+  return `${cur} ${(Number(amountMinor) / 100).toFixed(2)}`;
 }
 
 function logoBlock() {
@@ -258,6 +278,66 @@ function renderTemplate(templateCode, payload, user) {
         },
       };
     }
+    case "bank_verification_approved": {
+      const bankName = payload.bankName ? String(payload.bankName) : "Bank account";
+      const accountLast4 = payload.accountLast4 ? String(payload.accountLast4) : null;
+      const title = "Simodi — Bank account verified";
+      const rows = [{ label: "Bank", value: bankName }];
+      if (accountLast4) rows.push({ label: "Account", value: `****${accountLast4}` });
+      return {
+        email: {
+          subject: title,
+          html: brandedEmail({
+            title,
+            eyebrow: "Bank verification",
+            heading: "Your bank account is verified",
+            name,
+            intro:
+              "Your bank account details have been approved. You can now request wallet withdrawals to this account from the Simodi app.",
+            callout: detailsCallout(rows),
+            footnote: "Make sure the account remains in your name and matches your verified identity.",
+          }),
+        },
+        push: {
+          title: "Bank account verified",
+          body: `${bankName} is verified. You can now request withdrawals.`,
+          data: {
+            type: "bank.verification.approved",
+            bankVerificationId: String(payload.bankVerificationId || ""),
+          },
+        },
+      };
+    }
+    case "bank_verification_rejected": {
+      const bankName = payload.bankName ? String(payload.bankName) : "Bank account";
+      const accountLast4 = payload.accountLast4 ? String(payload.accountLast4) : null;
+      const title = "Simodi — Bank verification update";
+      const rows = [{ label: "Bank", value: bankName }];
+      if (accountLast4) rows.push({ label: "Account", value: `****${accountLast4}` });
+      return {
+        email: {
+          subject: title,
+          html: brandedEmail({
+            title,
+            eyebrow: "Bank verification",
+            heading: "We could not verify your bank account",
+            name,
+            intro:
+              "We were unable to approve the bank account you submitted. Please open the Simodi app, review your bank details and proof document, then resubmit for verification.",
+            callout: detailsCallout(rows),
+            footnote: "Withdrawals require a verified bank account in your name.",
+          }),
+        },
+        push: {
+          title: "Bank verification update",
+          body: `We could not verify ${bankName}. Please review and resubmit in the app.`,
+          data: {
+            type: "bank.verification.rejected",
+            bankVerificationId: String(payload.bankVerificationId || ""),
+          },
+        },
+      };
+    }
     case "trade_executed": {
       const metal = payload.metal === "silver" ? "Silver" : "Gold";
       const isBuy = payload.side !== "sell";
@@ -325,6 +405,44 @@ function renderTemplate(templateCode, payload, user) {
         },
       };
     }
+    case "trade_failed": {
+      const metal = metalLabel(payload.metal);
+      const side = payload.side === "sell" ? "sell" : "buy";
+      const sideLabel = side === "sell" ? "Sell" : "Buy";
+      const grams = String(payload.gramsExact || payload.grams || "");
+      const reason = payload.reason ? String(payload.reason) : null;
+      const title = `Simodi — ${sideLabel} ${metal} order failed`;
+      const rows = [
+        { label: "Side", value: sideLabel },
+        { label: "Metal", value: metal },
+        { label: "Grams", value: `${grams} g` },
+      ];
+      if (reason) rows.push({ label: "Reason", value: reason });
+      const pushBody = reason
+        ? `Your ${side} ${metal.toLowerCase()} order could not be completed: ${reason}.`
+        : `Your ${side} ${metal.toLowerCase()} order could not be completed.`;
+      return {
+        email: {
+          subject: title,
+          html: brandedEmail({
+            title,
+            eyebrow: "Trade update",
+            heading: `Your ${sideLabel.toLowerCase()} order could not be completed`,
+            name,
+            intro: reason
+              ? `We were unable to complete your ${side} ${metal.toLowerCase()} order: ${reason}.`
+              : `We were unable to complete your ${side} ${metal.toLowerCase()} order.`,
+            callout: detailsCallout(rows),
+            footnote: "No metal or wallet balance was changed. You can retry from the Simodi app.",
+          }),
+        },
+        push: {
+          title: "Trade failed",
+          body: pushBody,
+          data: { type: "trade.failed", tradeId: String(payload.tradeId || "") },
+        },
+      };
+    }
     case "wallet_deposit_approved": {
       const title = "Simodi — Deposit approved";
       const rows = [];
@@ -346,6 +464,176 @@ function renderTemplate(templateCode, payload, user) {
           title: "Deposit approved",
           body: "Your wallet deposit has been credited.",
           data: { type: "wallet.deposit_approved", paymentId: String(payload.paymentId || "") },
+        },
+      };
+    }
+    case "wallet_deposit_rejected": {
+      const title = "Simodi — Deposit rejected";
+      const reason = payload.reason ? String(payload.reason) : null;
+      const rows = [];
+      if (payload.paymentId) rows.push({ label: "Reference", value: String(payload.paymentId) });
+      if (reason) rows.push({ label: "Reason", value: reason });
+      return {
+        email: {
+          subject: title,
+          html: brandedEmail({
+            title,
+            eyebrow: "Wallet update",
+            heading: "Your deposit was not approved",
+            name,
+            intro: reason
+              ? `Your wallet deposit request was rejected: ${reason}.`
+              : "Your wallet deposit request was rejected.",
+            callout: detailsCallout(rows),
+            footnote: "If you believe this is a mistake, please contact our support team with your deposit reference.",
+          }),
+        },
+        push: {
+          title: "Deposit rejected",
+          body: reason ? `Your deposit was rejected: ${reason}.` : "Your deposit request was rejected.",
+          data: {
+            type: "wallet.deposit_rejected",
+            paymentId: String(payload.paymentId || ""),
+          },
+        },
+      };
+    }
+    case "wallet_withdrawal_paid": {
+      const title = "Simodi — Withdrawal paid";
+      const payout = formatPayoutMajor(payload.payoutAmountMinor, payload.payoutCurrency);
+      const rows = [];
+      const humanRef = sanitizeHumanReference(payload.withdrawalId);
+      if (humanRef) rows.push({ label: "Reference", value: humanRef });
+      if (payout) rows.push({ label: "Amount", value: payout });
+      return {
+        email: {
+          subject: title,
+          html: brandedEmail({
+            title,
+            eyebrow: "Wallet update",
+            heading: "Your withdrawal has been paid",
+            name,
+            intro:
+              "Your withdrawal has been processed and paid to your verified bank account.",
+            callout: detailsCallout(rows),
+            footnote: "It may take one to two business days for the funds to appear in your bank account.",
+          }),
+        },
+        push: {
+          title: "Withdrawal paid",
+          body: payout
+            ? `Your withdrawal of ${payout} has been paid to your bank account.`
+            : "Your withdrawal has been paid to your verified bank account.",
+          data: {
+            type: "wallet.withdrawal_paid",
+            withdrawalId: String(payload.withdrawalId || ""),
+          },
+        },
+      };
+    }
+    case "wallet_withdrawal_failed": {
+      const title = "Simodi — Withdrawal failed";
+      const reason = payload.reason ? String(payload.reason) : null;
+      const rows = [];
+      const humanRef = sanitizeHumanReference(payload.withdrawalId);
+      if (humanRef) rows.push({ label: "Reference", value: humanRef });
+      if (reason) rows.push({ label: "Reason", value: reason });
+      return {
+        email: {
+          subject: title,
+          html: brandedEmail({
+            title,
+            eyebrow: "Wallet update",
+            heading: "Your withdrawal could not be completed",
+            name,
+            intro: reason
+              ? `Your withdrawal could not be completed: ${reason}. The amount has been returned to your Simodi wallet.`
+              : "Your withdrawal could not be completed. The amount has been returned to your Simodi wallet.",
+            callout: detailsCallout(rows),
+            footnote: "You can review your wallet balance and try again from the Simodi app.",
+          }),
+        },
+        push: {
+          title: "Withdrawal failed",
+          body: reason
+            ? `Your withdrawal could not be completed: ${reason}. Funds were returned to your wallet.`
+            : "Your withdrawal could not be completed. Funds were returned to your wallet.",
+          data: {
+            type: "wallet.withdrawal_failed",
+            withdrawalId: String(payload.withdrawalId || ""),
+          },
+        },
+      };
+    }
+    case "gift_sent": {
+      const metal = metalLabel(payload.metal);
+      const grams = String(payload.gramsExact || payload.grams || "");
+      const recipientUserCode = payload.recipientUserCode ? String(payload.recipientUserCode) : "recipient";
+      const giftRef = sanitizeHumanReference(payload.giftRef);
+      const title = "Simodi — Gift sent";
+      const rows = [
+        { label: "Metal", value: metal },
+        { label: "Amount", value: `${grams} g` },
+        { label: "Recipient", value: recipientUserCode },
+      ];
+      if (giftRef) rows.push({ label: "Gift reference", value: giftRef });
+      return {
+        email: {
+          subject: title,
+          html: brandedEmail({
+            title,
+            eyebrow: "Gift transfer",
+            heading: `You sent ${grams}g ${metal}`,
+            name,
+            intro: `Your gift of ${grams}g ${metal} to ${recipientUserCode} has been sent successfully.`,
+            callout: detailsCallout(rows),
+            footnote: "The recipient can view the gift in their Simodi vault.",
+          }),
+        },
+        push: {
+          title: "Gift sent",
+          body: `You sent ${grams}g ${metal} to ${recipientUserCode}.`,
+          data: {
+            type: "gift.sent",
+            giftId: String(payload.giftId || ""),
+            giftRef: giftRef || "",
+          },
+        },
+      };
+    }
+    case "gift_received": {
+      const metal = metalLabel(payload.metal);
+      const grams = String(payload.gramsExact || payload.grams || "");
+      const senderUserCode = payload.senderUserCode ? String(payload.senderUserCode) : "a Simodi user";
+      const giftRef = sanitizeHumanReference(payload.giftRef);
+      const title = "Simodi — Gift received";
+      const rows = [
+        { label: "Metal", value: metal },
+        { label: "Amount", value: `${grams} g` },
+        { label: "From", value: senderUserCode },
+      ];
+      if (giftRef) rows.push({ label: "Gift reference", value: giftRef });
+      return {
+        email: {
+          subject: title,
+          html: brandedEmail({
+            title,
+            eyebrow: "Gift transfer",
+            heading: `You received ${grams}g ${metal}`,
+            name,
+            intro: `You received ${grams}g ${metal} as a gift from ${senderUserCode}. It has been added to your vault.`,
+            callout: detailsCallout(rows),
+            footnote: "Open the Simodi app to view your updated holdings.",
+          }),
+        },
+        push: {
+          title: "Gift received",
+          body: `You received ${grams}g ${metal} from ${senderUserCode}.`,
+          data: {
+            type: "gift.received",
+            giftId: String(payload.giftId || ""),
+            giftRef: giftRef || "",
+          },
         },
       };
     }
