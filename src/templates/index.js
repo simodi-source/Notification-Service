@@ -1,4 +1,5 @@
 const { env } = require("../config/env");
+const { resolvePushActionFromRoute } = require("../providers/push-routes");
 
 const OTP_EXPIRY_MINUTES = 5;
 
@@ -24,6 +25,11 @@ const EVENT_CHANNELS = {
   "mart.order.shipped": ["email", "push"],
   "mart.order.delivered": ["email", "push"],
   "mart.order.cancelled": ["email", "push"],
+  "admin.push.broadcast": ["push"],
+  "admin.ops.bank_verification_pending": ["email"],
+  "admin.ops.wallet_deposit_pending": ["email"],
+  "admin.ops.wallet_withdrawal_pending": ["email"],
+  "admin.ops.mart_order_new": ["email"],
 };
 
 function escapeHtml(s) {
@@ -156,6 +162,25 @@ function brandedEmail(params) {
   </table>
 </body>
 </html>`;
+}
+
+function adminOpsEmail({ title, eyebrow, heading, name, intro, rows, reviewUrl }) {
+  const cta = reviewUrl
+    ? `<p style="margin:0 0 24px;"><a href="${escapeHtml(reviewUrl)}" style="display:inline-block;background:#B8941E;color:#fff;text-decoration:none;padding:12px 20px;border-radius:6px;font-weight:600;font-size:14px;">Review in admin panel</a></p>`
+    : "";
+  const html = brandedEmail({
+    title,
+    eyebrow,
+    heading,
+    name,
+    intro,
+    callout: detailsCallout(rows),
+    footnote: "This is an automated operations alert. Sign in to the admin panel to take action.",
+  }).replace(
+    "<p style=\"margin:0;font-size:15px;line-height:1.65;\">Warm Regards,<br /><strong>The Simodi Team</strong></p>",
+    `${cta}<p style="margin:0;font-size:15px;line-height:1.65;">Warm Regards,<br /><strong>The Simodi Team</strong></p>`,
+  );
+  return { subject: title, html };
 }
 
 /**
@@ -781,6 +806,143 @@ function renderTemplate(templateCode, payload, user) {
               ? `Order ${orderCode} has been cancelled.`
               : "Your order has been cancelled.",
           data: { type: "mart.order.cancelled", orderId: String(payload.orderId || ""), orderCode },
+        },
+      };
+    }
+    case "admin_bank_verification_pending": {
+      const title = "Simodi Admin — Bank verification pending";
+      const rows = [
+        { label: "Holder", value: String(payload.holderName || "—") },
+        { label: "Bank", value: String(payload.bankName || "—") },
+        { label: "Reference", value: String(payload.referenceCode || payload.bankVerificationId || "—") },
+      ];
+      return {
+        email: adminOpsEmail({
+          title,
+          eyebrow: "Operations alert",
+          heading: payload.resubmitted ? "Bank details resubmitted" : "New bank verification request",
+          name,
+          intro: "A customer bank account is awaiting your review in the admin panel.",
+          rows,
+          reviewUrl: payload.reviewUrl || null,
+        }),
+        push: null,
+      };
+    }
+    case "admin_wallet_deposit_pending": {
+      const title = "Simodi Admin — Deposit pending review";
+      const amount =
+        payload.amountMajor != null && payload.currency
+          ? `${payload.currency} ${Number(payload.amountMajor).toFixed(2)}`
+          : "—";
+      const rows = [
+        { label: "Reference", value: String(payload.referenceCode || payload.paymentId || "—") },
+        { label: "Amount", value: amount },
+      ];
+      return {
+        email: adminOpsEmail({
+          title,
+          eyebrow: "Operations alert",
+          heading: "New wallet deposit request",
+          name,
+          intro: "A bank-transfer wallet deposit is awaiting admin approval.",
+          rows,
+          reviewUrl: payload.reviewUrl || null,
+        }),
+        push: null,
+      };
+    }
+    case "admin_wallet_withdrawal_pending": {
+      const title = "Simodi Admin — Withdrawal pending";
+      const amount =
+        payload.amountMajor != null && payload.currency
+          ? `${payload.currency} ${Number(payload.amountMajor).toFixed(2)}`
+          : "—";
+      const rows = [
+        { label: "Reference", value: String(payload.referenceCode || payload.withdrawalId || "—") },
+        { label: "Amount", value: amount },
+      ];
+      return {
+        email: adminOpsEmail({
+          title,
+          eyebrow: "Operations alert",
+          heading: "New wallet withdrawal request",
+          name,
+          intro: "A customer withdrawal is awaiting payout processing in the admin panel.",
+          rows,
+          reviewUrl: payload.reviewUrl || null,
+        }),
+        push: null,
+      };
+    }
+    case "admin_mart_order_new": {
+      const title = "Simodi Admin — New mart order";
+      const rows = [
+        { label: "Order", value: String(payload.orderCode || "—") },
+        {
+          label: "Total",
+          value:
+            payload.totalMajor != null
+              ? `${payload.currency || "AED"} ${Number(payload.totalMajor).toFixed(2)}`
+              : "—",
+        },
+        { label: "Payment", value: String(payload.paymentMethod || "—") },
+      ];
+      return {
+        email: adminOpsEmail({
+          title,
+          eyebrow: "Operations alert",
+          heading: "New paid mart order",
+          name,
+          intro: "A new Simodi Mart order has been paid and is ready for fulfilment.",
+          rows,
+          reviewUrl: payload.reviewUrl || null,
+        }),
+        push: null,
+      };
+    }
+    case "admin_push_broadcast": {
+      const title = String(payload.title || "Simodi");
+      const body = String(payload.body || "");
+      const imageUrl = payload.imageUrl ? String(payload.imageUrl) : null;
+      const actionRoute =
+        payload.actionRoute != null
+          ? String(payload.actionRoute)
+          : payload.route != null
+            ? String(payload.route)
+            : payload.data?.action_route != null
+              ? String(payload.data.action_route)
+              : payload.data?.route != null
+                ? String(payload.data.route)
+                : "";
+      const explicitCategory =
+        payload.actionType != null
+          ? String(payload.actionType)
+          : payload.data?.action_type != null
+            ? String(payload.data.action_type)
+            : null;
+      const resolvedAction = resolvePushActionFromRoute(actionRoute, explicitCategory);
+
+      /** Mobile app contract: action_route + action_type + action_button (see FCM rich push). */
+      const data = {
+        type: "admin.push.broadcast",
+        action_type: resolvedAction.actionType,
+      };
+      if (resolvedAction.actionRoute) data.action_route = resolvedAction.actionRoute;
+      if (resolvedAction.actionButton) data.action_button = resolvedAction.actionButton;
+      if (payload.data?.campaignId) data.campaignId = String(payload.data.campaignId);
+
+      return {
+        email: null,
+        push: {
+          title,
+          body,
+          data,
+          imageUrl,
+          actionRoute: resolvedAction.actionRoute,
+          actionType: resolvedAction.actionType,
+          actionButton: resolvedAction.actionButton,
+          richCampaign: true,
         },
       };
     }
