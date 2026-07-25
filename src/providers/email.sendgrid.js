@@ -14,7 +14,13 @@ function ensureConfigured() {
 }
 
 /**
- * @typedef {{ content: Buffer, filename: string, type?: string, disposition?: "attachment" | "inline" }} EmailAttachmentInput
+ * @typedef {{
+ *   content: Buffer,
+ *   filename: string,
+ *   type?: string,
+ *   disposition?: "attachment" | "inline",
+ *   contentId?: string,
+ * }} EmailAttachmentInput
  *
  * @param {{
  *   to: string,
@@ -37,14 +43,23 @@ async function send(params) {
   if (Array.isArray(params.attachments) && params.attachments.length > 0) {
     // SendGrid requires base64-encoded content. We convert Buffers here so the
     // upstream code can keep raw Buffer objects without provider knowledge.
-    message.attachments = params.attachments.map((att) => ({
-      content: Buffer.isBuffer(att.content)
-        ? att.content.toString("base64")
-        : String(att.content || ""),
-      filename: att.filename,
-      type: att.type || "application/pdf",
-      disposition: att.disposition || "attachment",
-    }));
+    message.attachments = params.attachments.map((att) => {
+      const mapped = {
+        content: Buffer.isBuffer(att.content)
+          ? att.content.toString("base64")
+          : String(att.content || ""),
+        filename: att.filename,
+        type: att.type || "application/pdf",
+        disposition: att.disposition || "attachment",
+      };
+      // Inline images referenced via cid: in the HTML body.
+      // SendGrid's Mail API uses snake_case `content_id` (not camelCase).
+      if (att.contentId) {
+        mapped.content_id = att.contentId;
+        mapped.disposition = "inline";
+      }
+      return mapped;
+    });
   }
 
   const [result] = await sgMail.send(message);

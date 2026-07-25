@@ -1,5 +1,6 @@
 const { env } = require("../config/env");
 const { resolvePushActionFromRoute } = require("../providers/push-routes");
+const { buildTradeConfirmationEmail } = require("./trade-confirmation-email");
 
 const OTP_EXPIRY_MINUTES = 5;
 
@@ -369,27 +370,12 @@ function renderTemplate(templateCode, payload, user) {
       const side = isBuy ? "Bought" : "Sold";
       const grams = String(payload.gramsExact || payload.grams || "");
       const pushSummary = `You ${side.toLowerCase()} ${grams}g ${metal}.`;
-      const title = `Simodi — ${side} ${metal}`;
-      // Reference label for the EMAIL body only — never fall back to the Mongo
-      // ObjectId here. The certificate's reference code is a separate field;
-      // see attachments below, where we forward `referenceCode` untouched so
-      // the worker's enrichment step can hydrate it from Mongo when missing.
+      // Reference for the certificate attachment descriptor — never fall back to
+      // the Mongo ObjectId. The email template also sanitizes independently.
       const humanReferenceCode = sanitizeHumanReference(payload.referenceCode);
-      const rows = [
-        { label: "Side", value: side },
-        { label: "Metal", value: metal },
-        { label: "Grams", value: `${grams} g` },
-      ];
-      if (humanReferenceCode) rows.push({ label: "Trade reference", value: humanReferenceCode });
-
-      const footnote = isBuy
-        ? "Your investment certificate is attached to this email. You can also view this trade and your updated holdings in the Simodi app."
-        : "You can view this trade and your updated holdings in the Simodi app.";
 
       // Buy-side trades ship with a Certificate of Investment PDF the worker
       // renders just before dispatch (so the rendered file isn't kept in Redis).
-      // We pass the raw tradeId so the worker can look the order up in Mongo
-      // when the producing backend hasn't sent the enriched fields.
       const attachments = isBuy
         ? [
             {
@@ -409,18 +395,27 @@ function renderTemplate(templateCode, payload, user) {
           ]
         : [];
 
+      const email = buildTradeConfirmationEmail({
+        name,
+        isBuy,
+        side: payload.side,
+        metal: payload.metal,
+        grams: payload.grams,
+        gramsExact: payload.gramsExact,
+        quoteCurrency: payload.quoteCurrency,
+        priceAedPerGramMajor: payload.priceAedPerGramMajor,
+        priceUsdPerGramMajor: payload.priceUsdPerGramMajor,
+        totalAedMajor: payload.totalAedMajor,
+        totalUsdMajor: payload.totalUsdMajor,
+        referenceCode: humanReferenceCode,
+        executedAt: payload.executedAt,
+      });
+
       return {
         email: {
-          subject: title,
-          html: brandedEmail({
-            title,
-            eyebrow: "Trade confirmed",
-            heading: `${side} ${grams}g ${metal}`,
-            name,
-            intro: "Your trade has been executed successfully. Here are the details:",
-            callout: detailsCallout(rows),
-            footnote,
-          }),
+          subject: email.subject,
+          html: email.html,
+          text: email.text,
           attachments,
         },
         push: {

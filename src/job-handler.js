@@ -46,7 +46,17 @@ async function handleNotificationJob(job) {
   const channels = (requestedChannels?.length ? requestedChannels : EVENT_CHANNELS[event]) || ["email"];
   const enabledChannels = channels.filter((ch) => prefs[ch] !== false);
 
-  const rendered = renderTemplate(templateCode, payload, user || {});
+  // For trade confirmations, backfill price/total/date/reference from Mongo before
+  // render so the branded email body matches the certificate attachment.
+  let templatePayload = payload;
+  if (templateCode === "trade_executed") {
+    templatePayload = await enrichTradeCertificateDescriptor({
+      ...payload,
+      tradeId: payload.tradeId ? String(payload.tradeId) : null,
+    });
+  }
+
+  const rendered = renderTemplate(templateCode, templatePayload, user || {});
   const userOid = user?._id || (userId && mongoose.isValidObjectId(userId) ? new mongoose.Types.ObjectId(userId) : null);
 
   const errors = [];
@@ -76,6 +86,7 @@ async function handleNotificationJob(job) {
           text: emailContent.text,
           attachments,
         });
+        console.log("email result", result);
         await writeLog({
           userId: userOid,
           event,
@@ -172,7 +183,7 @@ async function handleNotificationJob(job) {
  * pre-encoded blobs.
  *
  * @param {Array<Record<string, unknown>> | undefined} descriptors
- * @returns {Promise<Array<{ content: Buffer, filename: string, type: string }>>}
+ * @returns {Promise<Array<{ content: Buffer, filename: string, type: string, disposition?: string, contentId?: string }>>}
  */
 async function materializeAttachments(descriptors) {
   if (!Array.isArray(descriptors) || descriptors.length === 0) return [];
