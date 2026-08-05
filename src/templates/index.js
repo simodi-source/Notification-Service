@@ -15,8 +15,10 @@ const EVENT_CHANNELS = {
   "bank.verification.rejected": ["email", "push"],
   "trade.executed": ["email", "push"],
   "trade.failed": ["email", "push"],
+  "wallet.deposit_requested": ["email", "push"],
   "wallet.deposit_approved": ["email", "push"],
   "wallet.deposit_rejected": ["email", "push"],
+  "wallet.withdrawal_requested": ["email", "push"],
   "wallet.withdrawal_paid": ["email", "push"],
   "wallet.withdrawal_failed": ["email", "push"],
   "gift.sent": ["email", "push"],
@@ -463,6 +465,35 @@ function renderTemplate(templateCode, payload, user) {
         },
       };
     }
+    case "wallet_deposit_requested": {
+      const title = "Simodi — Deposit requested";
+      const rows = [];
+      const humanRef = sanitizeHumanReference(payload.referenceCode);
+      if (humanRef) rows.push({ label: "Reference", value: humanRef });
+      return {
+        email: {
+          subject: title,
+          html: brandedEmail({
+            title,
+            eyebrow: "Wallet update",
+            heading: "Your deposit request was received",
+            name,
+            intro:
+              "Your wallet deposit request has been submitted. We will review your transfer and credit your wallet once it is confirmed.",
+            callout: detailsCallout(rows),
+            footnote: "You will receive another notification when your deposit is approved or if we need more information.",
+          }),
+        },
+        push: {
+          title: "Deposit requested",
+          body: "Your wallet deposit request has been submitted and is pending review.",
+          data: {
+            type: "wallet.deposit_requested",
+            paymentId: String(payload.paymentId || ""),
+          },
+        },
+      };
+    }
     case "wallet_deposit_approved": {
       const title = "Simodi — Deposit approved";
       const rows = [];
@@ -514,6 +545,39 @@ function renderTemplate(templateCode, payload, user) {
           data: {
             type: "wallet.deposit_rejected",
             paymentId: String(payload.paymentId || ""),
+          },
+        },
+      };
+    }
+    case "wallet_withdrawal_requested": {
+      const title = "Simodi — Withdrawal requested";
+      const payout = formatPayoutMajor(payload.payoutAmountMinor, payload.payoutCurrency);
+      const rows = [];
+      const humanRef = sanitizeHumanReference(payload.referenceCode) || sanitizeHumanReference(payload.withdrawalId);
+      if (humanRef) rows.push({ label: "Reference", value: humanRef });
+      if (payout) rows.push({ label: "Amount", value: payout });
+      return {
+        email: {
+          subject: title,
+          html: brandedEmail({
+            title,
+            eyebrow: "Wallet update",
+            heading: "Your withdrawal request was received",
+            name,
+            intro:
+              "Your withdrawal request has been submitted and is being processed. We will notify you once the payout is completed.",
+            callout: detailsCallout(rows),
+            footnote: "Funds have been reserved from your Simodi wallet while this request is reviewed.",
+          }),
+        },
+        push: {
+          title: "Withdrawal requested",
+          body: payout
+            ? `Your withdrawal of ${payout} has been submitted and is being processed.`
+            : "Your withdrawal request has been submitted and is being processed.",
+          data: {
+            type: "wallet.withdrawal_requested",
+            withdrawalId: String(payload.withdrawalId || ""),
           },
         },
       };
