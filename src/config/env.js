@@ -24,8 +24,6 @@ const env = {
   TWILIO_SMS_FROM: process.env.TWILIO_SMS_FROM || "",
   TWILIO_WHATSAPP_FROM: process.env.TWILIO_WHATSAPP_FROM || "",
   WORKER_CONCURRENCY: Number.parseInt(process.env.NOTIFICATION_WORKER_CONCURRENCY || "5", 10),
-  OTP_RATE_LIMIT_MAX: Number.parseInt(process.env.OTP_RATE_LIMIT_MAX || "3", 10),
-  OTP_RATE_LIMIT_WINDOW_MS: Number.parseInt(process.env.OTP_RATE_LIMIT_WINDOW_MS || "900000", 10),
 };
 
 module.exports = { env };

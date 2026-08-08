@@ -6,11 +6,7 @@ const pushProvider = require("./providers/push.fcm");
 const smsProvider = require("./providers/sms.twilio");
 const whatsappProvider = require("./providers/whatsapp.twilio");
 const { buildCertificatePdf, safeFilename: certificateFilename } = require("./services/certificate.service");
-const { env } = require("./config/env");
-const { createRedisConnection } = require("./queue/connection");
 const { validateNotificationJob } = require("./queue/job-contract");
-
-const otpRateRedis = createRedisConnection();
 
 /**
  * @param {import('bullmq').Job} job
@@ -26,10 +22,6 @@ async function handleNotificationJob(job) {
     idempotencyKey,
     recipientEmail,
   } = job.data;
-
-  if (event === "auth.otp" || event === "auth.password_reset" || event === "wallet.withdrawal_otp") {
-    await assertOtpRateLimit(userId, recipientEmail, idempotencyKey);
-  }
 
   let user = null;
   if (userId && mongoose.isValidObjectId(userId)) {
@@ -311,18 +303,6 @@ function looksLikeObjectId(value) {
   if (value === null || value === undefined) return false;
   const s = String(value).trim();
   return /^[a-f0-9]{24}$/i.test(s);
-}
-
-async function assertOtpRateLimit(userId, recipientEmail, idempotencyKey) {
-  const keyBase = userId || recipientEmail || idempotencyKey;
-  const redisKey = `otp-rate:${keyBase}`;
-  const count = await otpRateRedis.incr(redisKey);
-  if (count === 1) {
-    await otpRateRedis.pexpire(redisKey, env.OTP_RATE_LIMIT_WINDOW_MS);
-  }
-  if (count > env.OTP_RATE_LIMIT_MAX) {
-    throw new Error("OTP rate limit exceeded");
-  }
 }
 
 module.exports = { handleNotificationJob };
