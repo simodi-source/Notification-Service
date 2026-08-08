@@ -9,10 +9,6 @@ function ensureConfigured() {
   }
 }
 
-/**
- * Lazy-load the ESM-only @messagebird/sdk from this CommonJS worker.
- * @see https://bird.com/en-us/docs/sdks/typescript
- */
 async function getClient() {
   ensureConfigured();
   if (!clientPromise) {
