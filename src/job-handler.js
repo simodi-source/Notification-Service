@@ -183,30 +183,18 @@ async function materializeAttachments(descriptors) {
   for (const desc of descriptors) {
     if (!desc || typeof desc !== "object") continue;
     if (desc.type === "trade_certificate") {
-      try {
-        // Backfill any missing fields straight from Mongo so the certificate is
-        // complete even when the producing backend predates the enriched payload.
-        const enriched = await enrichTradeCertificateDescriptor(desc);
-        const pdf = await buildCertificatePdf(enriched);
-        out.push({
-          content: pdf,
-          filename: certificateFilename(enriched.referenceCode || enriched.tradeId),
-          type: "application/pdf",
-        });
-      } catch (err) {
-        // Don't block the email if the certificate render fails — log and
-        // continue without the attachment. The customer still gets the trade
-        // confirmation; ops can investigate the render failure separately.
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(
-          JSON.stringify({
-            level: "error",
-            msg: "certificate render failed",
-            referenceCode: desc.referenceCode || desc.tradeId,
-            error: message,
-          }),
-        );
+      // Fail loudly — previously we swallowed render errors and sent the trade
+      // confirmation without a PDF, which looked like "certificate not attaching".
+      const enriched = await enrichTradeCertificateDescriptor(desc);
+      const pdf = await buildCertificatePdf(enriched);
+      if (!Buffer.isBuffer(pdf) || pdf.length === 0) {
+        throw new Error("Certificate PDF render returned empty buffer");
       }
+      out.push({
+        content: pdf,
+        filename: certificateFilename(enriched.referenceCode || enriched.tradeId),
+        type: "application/pdf",
+      });
     }
   }
   return out;

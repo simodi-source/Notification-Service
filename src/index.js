@@ -3,6 +3,7 @@ const { createRedisConnection } = require("./queue/connection");
 const { NOTIFICATIONS_QUEUE } = require("./queue/names");
 const { env } = require("./config/env");
 const { startWorker } = require("./worker");
+const { assertCertificateAssets } = require("./services/certificate.service");
 
 async function logHealth() {
   const redis = createRedisConnection();
@@ -25,6 +26,7 @@ async function logHealth() {
 
 async function main() {
   console.log(JSON.stringify({ level: "info", msg: "notification-service starting", nodeEnv: env.NODE_ENV }));
+  assertCertificateAssets();
   await connectMongo();
   await logHealth();
   const worker = startWorker();

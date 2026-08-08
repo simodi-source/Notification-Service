@@ -18,10 +18,20 @@
  * PDF is portable (no external network fetches during render).
  */
 const path = require("path");
+const fs = require("fs");
 const PDFDocument = require("pdfkit");
 
 const ASSET_HEADER = path.join(__dirname, "..", "assets", "certificate-header.png");
 const ASSET_WATERMARK = path.join(__dirname, "..", "assets", "certificate-watermark.png");
+
+function assertCertificateAssets() {
+  const missing = [ASSET_HEADER, ASSET_WATERMARK].filter((p) => !fs.existsSync(p));
+  if (missing.length > 0) {
+    throw new Error(
+      `Certificate PDF assets missing (deploy notification-service/src/assets): ${missing.join(", ")}`,
+    );
+  }
+}
 
 // A4 in PDF points (72dpi)
 const PAGE_W = 595.28;
@@ -166,6 +176,7 @@ function sanitizeReferenceCode(value) {
  * @returns {Promise<Buffer>}
  */
 function buildCertificatePdf(input) {
+  assertCertificateAssets();
   const metalKey = input.metal === "silver" ? "silver" : "gold";
   const metalLabel = METAL_LABEL[metalKey];
   const grams = formatGrams(input);
@@ -430,4 +441,4 @@ function buildCertificatePdf(input) {
   });
 }
 
-module.exports = { buildCertificatePdf, safeFilename };
+module.exports = { buildCertificatePdf, safeFilename, assertCertificateAssets };
