@@ -1,7 +1,7 @@
 const { mongoose } = require("./db/mongo");
 const { UserModel, writeLog } = require("./db/notification-log");
 const { EVENT_CHANNELS, renderTemplate } = require("./templates");
-const emailProvider = require("./providers/email.sendgrid");
+const emailProvider = require("./providers/email.bird");
 const pushProvider = require("./providers/push.fcm");
 const smsProvider = require("./providers/sms.twilio");
 const whatsappProvider = require("./providers/whatsapp.twilio");
@@ -178,7 +178,7 @@ async function handleNotificationJob(job) {
 
 /**
  * Turns lightweight attachment descriptors emitted by templates into the
- * Buffer-backed shape SendGrid expects. We render PDFs lazily here (rather than
+ * Buffer-backed shape the email provider expects. We render PDFs lazily here (rather than
  * during enqueue) so the worker can fail/retry without bloating Redis with
  * pre-encoded blobs.
  *

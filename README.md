@@ -1,6 +1,6 @@
 # Simodi Notification Service
 
-Plain Node.js worker that consumes notification jobs from Redis (BullMQ) and delivers email (SendGrid), push (FCM), and future SMS/WhatsApp channels.
+Plain Node.js worker that consumes notification jobs from Redis (BullMQ) and delivers email (Bird via `@messagebird/sdk`), push (FCM), and future SMS/WhatsApp channels.
 
 ## Prerequisites
 
@@ -13,7 +13,8 @@ Plain Node.js worker that consumes notification jobs from Redis (BullMQ) and del
 ```bash
 cd notification-service
 cp .env.example .env
-# Edit .env with REDIS_URL, MONGODB_URI, SendGrid, Firebase paths
+# Edit .env with REDIS_URL, MONGODB_URI, Bird (BIRD_API_KEY), Firebase paths
+# Replace bk_xxxxxxxxx with your real Bird workspace API key
 npm install
 npm start
 ```
@@ -42,4 +43,4 @@ npm install --production
 NODE_ENV=production npm start
 ```
 
-Outbound only: Redis, MongoDB, SendGrid, FCM. No inbound HTTP required in v1.
+Outbound only: Redis, MongoDB, Bird, FCM. No inbound HTTP required in v1.

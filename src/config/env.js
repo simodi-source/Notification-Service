@@ -9,7 +9,13 @@ const env = {
   NODE_ENV: process.env.NODE_ENV || "development",
   REDIS_URL: required("REDIS_URL", process.env.REDIS_URL),
   MONGODB_URI: required("MONGODB_URI", process.env.MONGODB_URI),
-  SENDGRID_API_KEY: process.env.SENDGRID_API_KEY || "",
+  /** Bird workspace API key — replace bk_xxxxxxxxx with the real key from the Bird dashboard. */
+  BIRD_API_KEY: process.env.BIRD_API_KEY || "",
+  /**
+   * Optional Bird API host override. When empty, @messagebird/sdk infers the region
+   * from the key prefix (bk_us1_ → us1, bk_eu1_ → eu1).
+   */
+  BIRD_API_BASE_URL: process.env.BIRD_API_BASE_URL || "",
   MAIL_FROM: process.env.MAIL_FROM || "",
   MAIL_FROM_NAME: process.env.MAIL_FROM_NAME || "Simodi",
   MAIL_BRAND_LOGO_URL: process.env.MAIL_BRAND_LOGO_URL || "",
