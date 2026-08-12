@@ -3,10 +3,14 @@ const { UserModel, writeLog } = require("./db/notification-log");
 const { EVENT_CHANNELS, renderTemplate } = require("./templates");
 const emailProvider = require("./providers/email.bird");
 const pushProvider = require("./providers/push.fcm");
-const smsProvider = require("./providers/sms.twilio");
+const smsTwilioProvider = require("./providers/sms.twilio");
+const smsTelesomProvider = require("./providers/sms.telesom");
 const whatsappProvider = require("./providers/whatsapp.twilio");
 const { buildCertificatePdf, safeFilename: certificateFilename } = require("./services/certificate.service");
 const { validateNotificationJob } = require("./queue/job-contract");
+
+/** OTP / transactional SMS must send even when user prefs.sms is false. */
+const FORCE_SMS_EVENTS = new Set(["mobile_money.otp"]);
 
 /**
  * @param {import('bullmq').Job} job
@@ -21,6 +25,8 @@ async function handleNotificationJob(job) {
     channels: requestedChannels,
     idempotencyKey,
     recipientEmail,
+    recipientPhone,
+    locale: jobLocale,
   } = job.data;
 
   let user = null;
@@ -36,7 +42,11 @@ async function handleNotificationJob(job) {
   };
 
   const channels = (requestedChannels?.length ? requestedChannels : EVENT_CHANNELS[event]) || ["email"];
-  const enabledChannels = channels.filter((ch) => prefs[ch] !== false);
+  const forceSms = FORCE_SMS_EVENTS.has(event);
+  const enabledChannels = channels.filter((ch) => {
+    if (ch === "sms" && forceSms) return true;
+    return prefs[ch] !== false;
+  });
 
   // For trade confirmations, backfill price/total/date/reference from Mongo before
   // render so the branded email body matches the certificate attachment.
@@ -48,10 +58,13 @@ async function handleNotificationJob(job) {
     });
   }
 
-  const rendered = renderTemplate(templateCode, templatePayload, user || {});
+  const locale = jobLocale || user?.preferredLanguage || "en";
+  const rendered = renderTemplate(templateCode, templatePayload, user || {}, locale);
   const userOid = user?._id || (userId && mongoose.isValidObjectId(userId) ? new mongoose.Types.ObjectId(userId) : null);
 
   const errors = [];
+  /** @type {{ requestId?: string, messageId?: string, status?: string } | null} */
+  let smsDeliveryResult = null;
 
   for (const channel of enabledChannels) {
     const channelKey = `${idempotencyKey}:${channel}`;
@@ -121,10 +134,22 @@ async function handleNotificationJob(job) {
           providerMessageId: result.providerMessageId,
         });
       } else if (channel === "sms") {
-        const phone = user?.countryCode && user?.mobile ? `${user.countryCode}${user.mobile}` : null;
+        const phoneFromUser =
+          user?.countryCode && user?.mobile ? `${user.countryCode}${user.mobile}` : null;
+        const phone = (recipientPhone && String(recipientPhone).trim()) || phoneFromUser;
         if (!phone) throw new Error("No mobile number for SMS");
-        const body = rendered.push?.body || rendered.email?.subject || "Simodi notification";
-        await smsProvider.send({ to: phone, body });
+        const body =
+          rendered.sms?.body ||
+          rendered.push?.body ||
+          rendered.email?.subject ||
+          "Simodi notification";
+        let smsResult;
+        if (event === "mobile_money.otp") {
+          smsResult = await smsTelesomProvider.send({ to: phone, body });
+        } else {
+          smsResult = await smsTwilioProvider.send({ to: phone, body });
+        }
+
         await writeLog({
           userId: userOid,
           event,
@@ -132,7 +157,16 @@ async function handleNotificationJob(job) {
           channel,
           status: "sent",
           idempotencyKey: channelKey,
+          providerMessageId: smsResult?.providerMessageId || smsResult?.messageId,
         });
+
+        if (smsResult && (smsResult.requestId || smsResult.messageId || smsResult.status)) {
+          smsDeliveryResult = {
+            requestId: smsResult.requestId,
+            messageId: smsResult.messageId,
+            status: smsResult.status || "queued",
+          };
+        }
       } else if (channel === "whatsapp") {
         const phone = user?.countryCode && user?.mobile ? `${user.countryCode}${user.mobile}` : null;
         if (!phone) throw new Error("No mobile number for WhatsApp");
@@ -166,6 +200,8 @@ async function handleNotificationJob(job) {
   if (errors.length > 0 && errors.length === enabledChannels.length) {
     throw new Error(`All channels failed: ${errors.map((e) => `${e.channel}: ${e.message}`).join("; ")}`);
   }
+
+  return smsDeliveryResult;
 }
 
 /**

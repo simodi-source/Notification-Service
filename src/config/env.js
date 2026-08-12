@@ -23,6 +23,16 @@ const env = {
   TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN || "",
   TWILIO_SMS_FROM: process.env.TWILIO_SMS_FROM || "",
   TWILIO_WHATSAPP_FROM: process.env.TWILIO_WHATSAPP_FROM || "",
+  /** Telesom Standard SMS API (OTP delivery). Never use Telesom OTP Messaging API. */
+  TELESOM_SMS_URL:
+    (process.env.TELESOM_SMS_URL || "").trim() ||
+    "https://sms.mytelesom.com/index.php/smsapi/v1/messages",
+  TELESOM_SENDER_ID: (process.env.TELESOM_SENDER_ID || "").trim(),
+  TELESOM_USERNAME: (process.env.TELESOM_USERNAME || "").trim(),
+  TELESOM_PASSWORD: (process.env.TELESOM_PASSWORD || "").trim(),
+  TELESOM_SHARED_SECRET: (process.env.TELESOM_SHARED_SECRET || "").trim(),
+  /** Static client_ref sent on every Telesom Standard SMS request. */
+  TELESOM_CLIENT_REF: (process.env.TELESOM_CLIENT_REF || "").trim() || "SIMODI-OTP",
   WORKER_CONCURRENCY: Number.parseInt(process.env.NOTIFICATION_WORKER_CONCURRENCY || "5", 10),
 };
 

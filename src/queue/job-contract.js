@@ -26,8 +26,8 @@ function validateNotificationJob(data) {
   if (typeof job.idempotencyKey !== "string" || !job.idempotencyKey) {
     throw new Error("Invalid job: idempotencyKey is required");
   }
-  if (!job.userId && !job.recipientEmail) {
-    throw new Error("Invalid job: userId or recipientEmail is required");
+  if (!job.userId && !job.recipientEmail && !job.recipientPhone) {
+    throw new Error("Invalid job: userId, recipientEmail, or recipientPhone is required");
   }
   if (job.payload !== undefined && (typeof job.payload !== "object" || job.payload === null)) {
     throw new Error("Invalid job: payload must be an object when provided");

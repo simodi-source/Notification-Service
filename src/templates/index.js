@@ -1,6 +1,7 @@
 const { env } = require("../config/env");
 const { resolvePushActionFromRoute } = require("../providers/push-routes");
 const { buildTradeConfirmationEmail } = require("./trade-confirmation-email");
+const { catalog, resolveLocale } = require("./i18n");
 
 const OTP_EXPIRY_MINUTES = 5;
 
@@ -9,6 +10,7 @@ const EVENT_CHANNELS = {
   "auth.otp": ["email"],
   "auth.password_reset": ["email"],
   "wallet.withdrawal_otp": ["email"],
+  "mobile_money.otp": ["sms"],
   "kyc.approved": ["email", "push"],
   "kyc.rejected": ["email", "push"],
   "bank.verification.approved": ["email", "push"],
@@ -83,11 +85,11 @@ function logoBlock() {
        </p>`;
 }
 
-function otpCallout(code) {
+function otpCallout(code, otpLabel = "Your OTP Code") {
   return `<table role="presentation" cellspacing="0" cellpadding="0" style="margin:0 0 24px;width:100%;">
     <tr>
       <td style="background:#f7f7f7;border:1px dashed #d0d0d0;padding:16px 20px;text-align:center;">
-        <p style="margin:0 0 6px;font-size:12px;color:#555;text-transform:uppercase;letter-spacing:0.04em;">Your OTP Code</p>
+        <p style="margin:0 0 6px;font-size:12px;color:#555;text-transform:uppercase;letter-spacing:0.04em;">${escapeHtml(otpLabel)}</p>
         <p style="margin:0;font-size:26px;font-weight:700;letter-spacing:0.35em;font-family:ui-monospace,Consolas,monospace;color:#111;">${escapeHtml(code)}</p>
       </td>
     </tr>
@@ -139,15 +141,18 @@ function brandedEmail(params) {
   const footnote = params.footnote
     ? `<p style="margin:0 0 28px;font-size:13px;line-height:1.65;color:#777;">${escapeHtml(params.footnote)}</p>`
     : "";
+  const lang = params.lang === "ar" ? "ar" : "en";
+  const dir = lang === "ar" ? "rtl" : "ltr";
+  const align = lang === "ar" ? "right" : "left";
 
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="${lang}" dir="${dir}">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>${escapeHtml(params.title)}</title>
 </head>
-<body style="margin:0;padding:32px 16px;background:#f0f0f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#242424;">
+<body style="margin:0;padding:32px 16px;background:#f0f0f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#242424;direction:${dir};text-align:${align};">
   <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:480px;margin:0 auto;">
     <tr>
       <td style="background:#ffffff;border-left:4px solid #B8941E;padding:32px 36px 36px;">
@@ -190,118 +195,132 @@ function adminOpsEmail({ title, eyebrow, heading, name, intro, rows, reviewUrl }
  * @param {string} templateCode
  * @param {Record<string, unknown>} payload
  * @param {{ firstName?: string }} user
+ * @param {"en"|"ar"|undefined} locale
  */
-function renderTemplate(templateCode, payload, user) {
-  const name = (payload.recipientName && String(payload.recipientName).trim()) || user?.firstName?.trim() || "there";
+function renderTemplate(templateCode, payload, user, locale) {
+  const lang = resolveLocale(locale || user?.preferredLanguage);
+  const i18n = catalog(lang);
+  const name =
+    (payload.recipientName && String(payload.recipientName).trim()) ||
+    user?.firstName?.trim() ||
+    i18n.greetingThere;
+  const emailLang = { lang };
 
   switch (templateCode) {
     case "auth_otp": {
-      const title = "Simodi — Login OTP";
+      const c = i18n.auth_otp;
+      const title = c.subject;
       return {
         email: {
           subject: title,
           html: brandedEmail({
+            ...emailLang,
             title,
-            eyebrow: "Login verification",
-            heading: "Your one-time code",
+            eyebrow: c.eyebrow,
+            heading: c.heading,
             name,
-            intro: "We received a login request for your Simodi account. Use the code below to continue.",
-            callout: otpCallout(String(payload.otpCode || "")),
-            footnote: `This code is valid for ${OTP_EXPIRY_MINUTES} minutes. If you did not request this, please ignore this email.`,
+            intro: c.intro,
+            callout: otpCallout(String(payload.otpCode || ""), i18n.otpLabel),
+            footnote: c.footnote(OTP_EXPIRY_MINUTES),
           }),
         },
         push: null,
       };
     }
     case "auth_password_reset": {
-      const title = "Simodi — Password reset request";
+      const c = i18n.auth_password_reset;
+      const title = c.subject;
       return {
         email: {
           subject: title,
           html: brandedEmail({
+            ...emailLang,
             title,
-            eyebrow: "Password reset",
-            heading: "Reset your Simodi password",
+            eyebrow: c.eyebrow,
+            heading: c.heading,
             name,
-            intro:
-              "We received a request to reset the password on your Simodi account. Enter the verification code below in the app to set a new password.",
-            callout: otpCallout(String(payload.otpCode || "")),
-            paragraphs: [
-              `This code expires in ${OTP_EXPIRY_MINUTES} minutes and can be used only once.`,
-            ],
-            footnote:
-              "If you did not request a password reset, you can safely ignore this email — your password will remain unchanged. For your security, never share this code with anyone, including Simodi staff.",
+            intro: c.intro,
+            callout: otpCallout(String(payload.otpCode || ""), i18n.otpLabel),
+            paragraphs: [c.expires(OTP_EXPIRY_MINUTES)],
+            footnote: c.footnote,
           }),
         },
         push: null,
       };
     }
     case "wallet_withdrawal_otp": {
-      const title = "Simodi — Withdrawal verification";
+      const c = i18n.wallet_withdrawal_otp;
+      const title = c.subject;
       return {
         email: {
           subject: title,
           html: brandedEmail({
+            ...emailLang,
             title,
-            eyebrow: "Withdrawal verification",
-            heading: "Confirm your withdrawal request",
+            eyebrow: c.eyebrow,
+            heading: c.heading,
             name,
-            intro:
-              "We received a request to withdraw funds from your Simodi wallet. Enter the verification code below in the app to submit your withdrawal.",
-            callout: otpCallout(String(payload.otpCode || "")),
-            paragraphs: [
-              `This code expires in ${OTP_EXPIRY_MINUTES} minutes and can be used only once.`,
-            ],
-            footnote:
-              "If you did not request a withdrawal, please ignore this email and contact our support team immediately. Never share this code with anyone, including Simodi staff.",
+            intro: c.intro,
+            callout: otpCallout(String(payload.otpCode || ""), i18n.otpLabel),
+            paragraphs: [c.expires(OTP_EXPIRY_MINUTES)],
+            footnote: c.footnote,
           }),
         },
         push: null,
       };
     }
+    case "mobile_money_otp": {
+      const otpCode = String(payload.otpCode || "");
+      const smsBody = `Your Simodi verification code is ${otpCode}`;
+      return {
+        email: null,
+        push: null,
+        sms: { body: smsBody },
+      };
+    }
     case "kyc_approved": {
-      const title = "Simodi — Identity verification approved";
+      const c = i18n.kyc_approved;
+      const title = c.subject;
       return {
         email: {
           subject: title,
           html: brandedEmail({
+            ...emailLang,
             title,
-            eyebrow: "KYC update",
-            heading: "Your identity has been verified",
+            eyebrow: c.eyebrow,
+            heading: c.heading,
             name,
-            intro:
-              "Your identity verification has been approved. You now have full access to deposits, withdrawals, and trading on Simodi.",
-            footnote: "Open the Simodi app to start trading gold and silver.",
+            intro: c.intro,
+            footnote: c.footnote,
           }),
         },
         push: {
-          title: "Identity verified",
-          body: "Your KYC is complete. You can now trade and withdraw.",
+          title: c.pushTitle,
+          body: c.pushBody,
           data: { type: "kyc.approved" },
         },
       };
     }
     case "kyc_rejected": {
-      const title = "Simodi — Identity verification update";
+      const c = i18n.kyc_rejected;
+      const title = c.subject;
       return {
         email: {
           subject: title,
           html: brandedEmail({
+            ...emailLang,
             title,
-            eyebrow: "KYC update",
-            heading: "Action required on your verification",
+            eyebrow: c.eyebrow,
+            heading: c.heading,
             name,
-            intro:
-              "We were unable to approve your identity verification at this time.",
-            paragraphs: [
-              "Please open the Simodi app and retry the verification, making sure your documents are clear and your selfie is well lit. If you need help, our support team is available.",
-            ],
-            footnote: "Until verification is complete, deposits and trading remain limited.",
+            intro: c.intro,
+            paragraphs: [c.paragraph],
+            footnote: c.footnote,
           }),
         },
         push: {
-          title: "KYC update required",
-          body: "Please retry identity verification in the app.",
+          title: c.pushTitle,
+          body: c.pushBody,
           data: { type: "kyc.rejected" },
         },
       };

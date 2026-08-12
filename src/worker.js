@@ -20,7 +20,7 @@ function startWorker() {
     async (job) => {
       const started = Date.now();
       try {
-        await handleNotificationJob(job);
+        return await handleNotificationJob(job);
       } finally {
         console.log(
           JSON.stringify({
