@@ -395,26 +395,25 @@ function renderTemplate(templateCode, payload, user, locale) {
       // the Mongo ObjectId. The email template also sanitizes independently.
       const humanReferenceCode = sanitizeHumanReference(payload.referenceCode);
 
-      // Buy-side trades ship with a Certificate of Investment PDF the worker
-      // renders just before dispatch (so the rendered file isn't kept in Redis).
-      const attachments = isBuy
-        ? [
-            {
-              type: "trade_certificate",
-              referenceCode: humanReferenceCode || null,
-              tradeId: payload.tradeId ? String(payload.tradeId) : null,
-              metal: payload.metal,
-              grams: payload.grams,
-              gramsExact: payload.gramsExact,
-              quoteCurrency: payload.quoteCurrency,
-              priceAedPerGramMajor: payload.priceAedPerGramMajor,
-              priceUsdPerGramMajor: payload.priceUsdPerGramMajor,
-              totalAedMajor: payload.totalAedMajor,
-              totalUsdMajor: payload.totalUsdMajor,
-              executedAt: payload.executedAt,
-            },
-          ]
-        : [];
+      const tradeDoc = {
+        referenceCode: humanReferenceCode || null,
+        tradeId: payload.tradeId ? String(payload.tradeId) : null,
+        side: isBuy ? "buy" : "sell",
+        metal: payload.metal,
+        grams: payload.grams,
+        gramsExact: payload.gramsExact,
+        quoteCurrency: payload.quoteCurrency,
+        priceAedPerGramMajor: payload.priceAedPerGramMajor,
+        priceUsdPerGramMajor: payload.priceUsdPerGramMajor,
+        totalAedMajor: payload.totalAedMajor,
+        totalUsdMajor: payload.totalUsdMajor,
+        executedAt: payload.executedAt,
+      };
+      // Buy: certificate + sales invoice. Sell: purchase voucher only.
+      const attachments = [
+        { type: "trade_invoice", ...tradeDoc },
+        ...(isBuy ? [{ type: "trade_certificate", ...tradeDoc }] : []),
+      ];
 
       const email = buildTradeConfirmationEmail({
         name,

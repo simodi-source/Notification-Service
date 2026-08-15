@@ -7,6 +7,7 @@ const smsTwilioProvider = require("./providers/sms.twilio");
 const smsTelesomProvider = require("./providers/sms.telesom");
 const whatsappProvider = require("./providers/whatsapp.twilio");
 const { buildCertificatePdf, safeFilename: certificateFilename } = require("./services/certificate.service");
+const { buildInvoicePdf, safeFilename: invoiceFilename } = require("./services/invoice.service");
 const { validateNotificationJob } = require("./queue/job-contract");
 
 /** OTP / transactional SMS must send even when user prefs.sms is false. */
@@ -83,7 +84,7 @@ async function handleNotificationJob(job) {
         if (!to) throw new Error("No email address for notification");
         const emailContent = rendered.email;
         if (!emailContent) throw new Error(`Template ${templateCode} has no email content`);
-        const attachments = await materializeAttachments(emailContent.attachments);
+        const attachments = await materializeAttachments(emailContent.attachments, user);
         const result = await emailProvider.send({
           to,
           subject: emailContent.subject,
@@ -213,14 +214,13 @@ async function handleNotificationJob(job) {
  * @param {Array<Record<string, unknown>> | undefined} descriptors
  * @returns {Promise<Array<{ content: Buffer, filename: string, type: string, disposition?: string, contentId?: string }>>}
  */
-async function materializeAttachments(descriptors) {
+async function materializeAttachments(descriptors, user) {
   if (!Array.isArray(descriptors) || descriptors.length === 0) return [];
   const out = [];
+  const customer = customerFromUser(user);
   for (const desc of descriptors) {
     if (!desc || typeof desc !== "object") continue;
     if (desc.type === "trade_certificate") {
-      // Fail loudly — previously we swallowed render errors and sent the trade
-      // confirmation without a PDF, which looked like "certificate not attaching".
       const enriched = await enrichTradeCertificateDescriptor(desc);
       const pdf = await buildCertificatePdf(enriched);
       if (!Buffer.isBuffer(pdf) || pdf.length === 0) {
@@ -231,9 +231,39 @@ async function materializeAttachments(descriptors) {
         filename: certificateFilename(enriched.referenceCode || enriched.tradeId),
         type: "application/pdf",
       });
+    } else if (desc.type === "trade_invoice") {
+      const enriched = await enrichTradeCertificateDescriptor({ ...desc, ...customer });
+      const pdf = await buildInvoicePdf(enriched);
+      if (!Buffer.isBuffer(pdf) || pdf.length === 0) {
+        throw new Error("Invoice PDF render returned empty buffer");
+      }
+      out.push({
+        content: pdf,
+        filename: invoiceFilename(enriched.referenceCode, enriched.side === "sell"),
+        type: "application/pdf",
+      });
     }
   }
   return out;
+}
+
+function customerFromUser(user) {
+  if (!user) {
+    return { customerName: "Customer", customerEmail: "", customerPhone: "" };
+  }
+  const fullName = [user.firstName || "", user.lastName || ""]
+    .map((s) => String(s).trim())
+    .filter(Boolean)
+    .join(" ");
+  const phone = [user.countryCode || "", user.mobile || ""]
+    .map((s) => String(s).trim())
+    .filter(Boolean)
+    .join(" ");
+  return {
+    customerName: fullName || "Customer",
+    customerEmail: user.email ? String(user.email) : "",
+    customerPhone: phone,
+  };
 }
 
 /**
@@ -288,6 +318,7 @@ async function enrichTradeCertificateDescriptor(desc) {
     return {
       ...desc,
       referenceCode: humanRef || orderRef || null,
+      side: desc.side || order.side || null,
       quoteCurrency: desc.quoteCurrency || order.quoteCurrency || "AED",
       priceAedPerGramMajor:
         desc.priceAedPerGramMajor != null
