@@ -1,65 +1,86 @@
 /**
- * Certificate of Investment PDF generator.
+ * Gold / Silver Ownership Certificate PDF (PDFKit).
  *
- * Builds a single-page A4 certificate using PDFKit (no Chromium needed).
- *
- * Layout (top → bottom):
- *   1. Full-width header strip (Simodi Gold logo on black with gold wave)
- *   2. Warm gold body fill behind the rest of the page
- *   3. Faint watermark swirl image (low opacity) sitting under the text
- *   4. "CERTIFICATE / OF INVESTMENT" serif title
- *   5. Trade reference code chip
- *   6. Bold grams + metal headline ("20.8300 Gram Gold")
- *   7. Description paragraph + bulleted Investment Details list
- *   8. DATE / SIGNATURE underscored lines at the bottom
- *
- * The two image assets (`certificate-header.png`, `certificate-watermark.png`)
- * live in `notification-service/src/assets/` and are embedded directly so the
- * PDF is portable (no external network fetches during render).
+ * Layout matches the Simodi GOLD ownership certificate design:
+ *   gold page border, centered logo, title block, certificate info bar,
+ *   certified owner, ownership detail grid, confirmation + authentication,
+ *   legal footer.
  */
-const path = require("path");
-const fs = require("fs");
+const https = require("https");
+const http = require("http");
 const PDFDocument = require("pdfkit");
 
-const ASSET_HEADER = path.join(__dirname, "..", "assets", "certificate-header.png");
-const ASSET_WATERMARK = path.join(__dirname, "..", "assets", "certificate-watermark.png");
+const CERTIFICATE_LOGO_URL =
+  "https://simodi-gold-bucket.s3.ap-south-1.amazonaws.com/uploads/profile_avatar/admin/6a3114a9c0774fb883089dc9/8be3ddef-d1dc-4ca2-ae82-b01c242ce6bf.png";
+const CERTIFICATE_WATERMARK_URL =
+  "https://simodi-gold-bucket.s3.ap-south-1.amazonaws.com/uploads/profile_avatar/admin/6a3114a9c0774fb883089dc9/2d5ea3bf-6857-4fd8-b1f2-d1005bc14980.png";
 
-function assertCertificateAssets() {
-  const missing = [ASSET_HEADER, ASSET_WATERMARK].filter((p) => !fs.existsSync(p));
-  if (missing.length > 0) {
-    throw new Error(
-      `Certificate PDF assets missing (deploy notification-service/src/assets): ${missing.join(", ")}`,
-    );
-  }
-}
-
-// A4 in PDF points (72dpi)
 const PAGE_W = 595.28;
 const PAGE_H = 841.89;
+const MARGIN = 22;
+const BORDER_INSET = 14;
 
-// Header asset is 1785 × 663 → scaled to full page width keeps its native aspect.
-const HEADER_HEIGHT = (PAGE_W * 663) / 1785;
+const COLOR_GOLD = "#B8941E";
+const COLOR_GOLD_LIGHT = "#E8D5A3";
+const COLOR_GOLD_FILL = "#FBF6EA";
+const COLOR_TEXT = "#1a1a1a";
+const COLOR_MUTED = "#666666";
 
-// Body uses a vertical gradient from a lighter gold at the top to a richer
-// gold at the bottom — matches the values supplied by the design team.
-const COLOR_BODY_TOP = "#E1BD67";
-const COLOR_BODY_BOTTOM = "#C39E52";
-const COLOR_TEXT = "#1f1a13"; // near-black brown
-const COLOR_ACCENT = "#7a5d2e"; // muted gold for reference code
-const COLOR_DIVIDER = "#2c2418"; // dark divider line
-
-// English month abbreviations — `Intl.DateTimeFormat("en-GB")` returns
-// "Sept" for September which doesn't match the design, so we format manually.
-const MONTHS_SHORT = [
-  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+const MONTHS_FULL = [
+  "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE",
+  "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER",
 ];
 
 const METAL_LABEL = { gold: "Gold", silver: "Silver" };
-const ASSET_DESCRIPTION = {
-  gold: "Physical Gold Bar (99.9% Purity)",
-  silver: "Physical Silver Bar (99.9% Purity)",
-};
+const PURITY_LABEL = { gold: ".999 fine", silver: ".999 fine" };
+
+/** @type {Map<string, Buffer>} */
+const imageCache = new Map();
+
+function assertCertificateAssets() {
+  // Assets are fetched from S3 at render time; no local files required.
+}
+
+function fetchBuffer(url, redirectCount = 0) {
+  if (redirectCount > 4) return Promise.reject(new Error("Too many redirects fetching certificate asset"));
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith("http://") ? http : https;
+    const req = lib.get(url, (res) => {
+      if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        fetchBuffer(res.headers.location, redirectCount + 1).then(resolve, reject);
+        return;
+      }
+      if (!res.statusCode || res.statusCode >= 400) {
+        res.resume();
+        reject(new Error(`Certificate asset fetch failed (${res.statusCode})`));
+        return;
+      }
+      const chunks = [];
+      res.on("data", (c) => chunks.push(c));
+      res.on("end", () => resolve(Buffer.concat(chunks)));
+    });
+    req.on("error", reject);
+    req.setTimeout(12000, () => {
+      req.destroy();
+      reject(new Error("Certificate asset fetch timed out"));
+    });
+  });
+}
+
+async function loadImage(url) {
+  const cached = imageCache.get(url);
+  if (cached) return cached;
+  const buf = await fetchBuffer(url);
+  imageCache.set(url, buf);
+  return buf;
+}
+
+function pngSize(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < 24) return null;
+  if (buf[0] !== 0x89 || buf.toString("ascii", 1, 4) !== "PNG") return null;
+  return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+}
 
 function toNumber(value) {
   if (value === null || value === undefined || value === "") return null;
@@ -71,31 +92,26 @@ function formatGrams(input) {
   const exact = input.gramsExact ? Number(input.gramsExact) : null;
   const fallback = toNumber(input.grams);
   const n = Number.isFinite(exact) ? exact : fallback;
-  if (n === null) return "0.0000";
-  return n.toFixed(4);
+  if (n === null) return "0.000";
+  return n.toFixed(3);
 }
 
 function formatMoney(amount, currency) {
   const n = toNumber(amount);
-  if (n === null) return "";
-  // Always render with grouped thousands ("1,770.55") so the certificate matches
-  // the design sample even for large purchases.
+  if (n === null) return "—";
   const fixed = n.toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
-  if (currency === "USD") return `$${fixed}`;
   return `${currency} ${fixed}`;
 }
 
-function formatDate(iso) {
+function formatDateLong(iso) {
   const d = iso ? new Date(iso) : new Date();
   if (Number.isNaN(d.getTime())) return "";
-  // Build the date in Asia/Dubai using the locale-agnostic parts API so we
-  // can stitch "DD Mon YYYY" without locale quirks (e.g. en-GB → "Sept").
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Dubai",
-    day: "2-digit",
+    day: "numeric",
     month: "numeric",
     year: "numeric",
   }).formatToParts(d);
@@ -103,12 +119,24 @@ function formatDate(iso) {
   const day = get("day");
   const monthIdx = Math.max(0, Math.min(11, Number(get("month")) - 1));
   const year = get("year");
-  return `${day} ${MONTHS_SHORT[monthIdx]} ${year}`;
+  return `${day} ${MONTHS_FULL[monthIdx]} ${year}`;
+}
+
+function formatDateCompact(iso) {
+  const d = iso ? new Date(iso) : new Date();
+  if (Number.isNaN(d.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Dubai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(d);
+  const get = (type) => parts.find((p) => p.type === type)?.value || "";
+  return `${get("year")}${get("month")}${get("day")}`;
 }
 
 function resolveCurrency(input) {
   if (input.quoteCurrency === "USD") return "USD";
-  if (input.quoteCurrency === "AED") return "AED";
   return "AED";
 }
 
@@ -132,31 +160,67 @@ function resolveTotalMajor(input, currency) {
   return null;
 }
 
-function drawBullet(doc, x, y) {
-  doc.save();
-  doc.circle(x, y, 1.6).fillColor(COLOR_TEXT).fill();
-  doc.restore();
-}
-
-function safeFilename(referenceCode) {
-  const cleaned = String(referenceCode || "trade").replace(/[^a-zA-Z0-9._-]/g, "_");
-  return `Simodi-Certificate-${cleaned}.pdf`;
-}
-
-/**
- * Treats Mongo ObjectId-shaped strings (24 hex chars) as "no reference" so the
- * certificate never displays an internal ID even if an upstream producer leaks
- * one into the `referenceCode` slot.
- *
- * @param {unknown} value
- * @returns {string}
- */
 function sanitizeReferenceCode(value) {
   if (value === null || value === undefined) return "";
   const trimmed = String(value).trim();
   if (!trimmed) return "";
   if (/^[a-f0-9]{24}$/i.test(trimmed)) return "";
   return trimmed;
+}
+
+function buildCertificateNo(input) {
+  const ref = sanitizeReferenceCode(input.referenceCode);
+  if (ref) return ref;
+  const grams = formatGrams(input).replace(".", "");
+  return `SG-${formatDateCompact(input.executedAt)}-${grams}G`;
+}
+
+function safeFilename(referenceCode) {
+  const cleaned = String(referenceCode || "trade").replace(/[^a-zA-Z0-9._-]/g, "_");
+  return `Simodi-Ownership-Certificate-${cleaned}.pdf`;
+}
+
+function drawGoldBorder(doc, x, y, w, h) {
+  doc.save();
+  doc.rect(x, y, w, h).lineWidth(2).strokeColor(COLOR_GOLD).stroke();
+  doc.restore();
+}
+
+function drawLabel(doc, text, x, y, width, align = "left") {
+  doc.font("Helvetica-Bold").fontSize(7).fillColor(COLOR_GOLD).text(text, x, y, {
+    width,
+    align,
+    characterSpacing: 0.8,
+  });
+}
+
+function drawValue(doc, text, x, y, width, opts = {}) {
+  doc
+    .font(opts.bold === false ? "Helvetica" : "Helvetica-Bold")
+    .fontSize(opts.size || 11)
+    .fillColor(opts.color || COLOR_TEXT)
+    .text(text, x, y, { width, align: opts.align || "left", lineBreak: false });
+}
+
+function drawDetailBox(doc, x, y, w, h, label, value, valueOpts = {}) {
+  doc.save();
+  doc.roundedRect(x, y, w, h, 6).lineWidth(0.8).strokeColor("#D8D8D8").stroke();
+  drawLabel(doc, label, x + 10, y + 10, w - 20);
+  drawValue(doc, value, x + 10, y + 24, w - 20, valueOpts);
+  doc.restore();
+}
+
+function drawAuthBox(doc, x, y, w, h, label, value) {
+  doc.save();
+  doc.roundedRect(x, y, w, h, 4).lineWidth(0.8).strokeColor("#D0D0D0").stroke();
+  drawLabel(doc, label, x + 8, y + 8, w - 16, "center");
+  const display = value && String(value).trim() ? String(value) : "…………………………";
+  doc
+    .font("Helvetica")
+    .fontSize(9)
+    .fillColor(COLOR_TEXT)
+    .text(display, x + 8, y + 24, { width: w - 16, align: "center", lineBreak: false });
+  doc.restore();
 }
 
 /**
@@ -172,33 +236,45 @@ function sanitizeReferenceCode(value) {
  *   totalAedMajor?: number,
  *   totalUsdMajor?: number | null,
  *   executedAt?: string | Date,
+ *   customerName?: string,
+ *   customerEmail?: string,
+ *   customerPhone?: string,
  * }} input
  * @returns {Promise<Buffer>}
  */
-function buildCertificatePdf(input) {
-  assertCertificateAssets();
+async function buildCertificatePdf(input) {
+  const [logoBuf, watermarkBuf] = await Promise.all([
+    loadImage(CERTIFICATE_LOGO_URL),
+    loadImage(CERTIFICATE_WATERMARK_URL),
+  ]);
+
   const metalKey = input.metal === "silver" ? "silver" : "gold";
   const metalLabel = METAL_LABEL[metalKey];
+  const titleMetal = metalLabel.toUpperCase();
   const grams = formatGrams(input);
-  // ONLY the human-readable referenceCode is acceptable on the certificate.
-  // `sanitizeReferenceCode` also drops Mongo ObjectId-shaped values so the
-  // chip can never accidentally render a 24-char hash like
-  // `#6A157D21B3F5005386EC2B82` even if upstream leaks one into this field.
-  const rawRef = sanitizeReferenceCode(input.referenceCode);
-  const refDisplay = rawRef ? `#${rawRef.toUpperCase()}` : "";
   const currency = resolveCurrency(input);
   const pricePerGram = formatMoney(resolvePricePerGram(input, currency), currency);
-  const totalPrice = formatMoney(resolveTotalMajor(input, currency), currency);
-  const transactionDate = formatDate(input.executedAt);
+  const totalPaid = formatMoney(resolveTotalMajor(input, currency), currency);
+  const certificateNo = buildCertificateNo(input);
+  const transactionRef = sanitizeReferenceCode(input.referenceCode) || certificateNo;
+  const dateLong = formatDateLong(input.executedAt);
+  const ownerName = String(input.customerName || "Customer").trim() || "Customer";
+  const ownerEmail = String(input.customerEmail || "").trim() || "Not provided";
+  const ownerPhone = String(input.customerPhone || "").trim() || "Not provided";
+
+  const confirmationText =
+    `This certifies that ${ownerName} has purchased and owns ${grams} grams of ${metalLabel.toLowerCase()} ` +
+    `(purity ${PURITY_LABEL[metalKey]}) through SIMODI GOLD. The metal is held in pooled third-party custody ` +
+    "and represents an undivided beneficial interest in the underlying physical commodity.";
 
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({
       size: "A4",
       margin: 0,
       info: {
-        Title: `Simodi ${metalLabel} Certificate ${rawRef || ""}`.trim(),
-        Author: "Simodi",
-        Subject: "Certificate of Investment",
+        Title: `${titleMetal} Ownership Certificate ${certificateNo}`,
+        Author: "SIMODI GOLD",
+        Subject: "Gold Ownership Certificate",
       },
     });
 
@@ -207,238 +283,165 @@ function buildCertificatePdf(input) {
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
 
-    // 1. Body gold gradient (drawn first so the header strip overlays cleanly).
-    //    Vertical linear gradient: lighter gold top → richer gold bottom.
+    doc.rect(0, 0, PAGE_W, PAGE_H).fill("#ffffff");
+
+    const frameX = MARGIN;
+    const frameY = MARGIN;
+    const frameW = PAGE_W - MARGIN * 2;
+    const frameH = PAGE_H - MARGIN * 2;
+    drawGoldBorder(doc, frameX, frameY, frameW, frameH);
+
+    const contentX = frameX + BORDER_INSET;
+    const contentY = frameY + BORDER_INSET;
+    const contentW = frameW - BORDER_INSET * 2;
+
     doc.save();
-    const bodyGradient = doc.linearGradient(0, 0, 0, PAGE_H);
-    bodyGradient.stop(0, COLOR_BODY_TOP).stop(1, COLOR_BODY_BOTTOM);
-    doc.rect(0, 0, PAGE_W, PAGE_H).fill(bodyGradient);
+    doc.opacity(0.12);
+    const wmSize = pngSize(watermarkBuf);
+    const wmW = 260;
+    const wmH = wmSize && wmSize.width > 0 ? (wmW * wmSize.height) / wmSize.width : wmW;
+    try {
+      doc.image(watermarkBuf, contentX - 40, contentY - 20, { width: wmW, height: wmH });
+    } catch {
+      // Watermark is decorative; continue without it.
+    }
     doc.restore();
 
-    // 2. Watermark swirl anchored to the bottom-right corner only. The asset is
-    //    white-on-transparent so we lift opacity to ~55% over the gold fill —
-    //    that blends to a softer champagne tone, matching the reference where
-    //    the swirl is a subtle corner accent rather than a full-body wash.
-    doc.save();
-    doc.opacity(0.55);
-    const watermarkWidth = 320;
-    const watermarkHeight = (watermarkWidth * 789) / 831;
-    doc.image(
-      ASSET_WATERMARK,
-      PAGE_W - watermarkWidth + 40,
-      PAGE_H - watermarkHeight + 30,
-      { width: watermarkWidth },
-    );
-    doc.restore();
-
-    // 3. Header artwork — transparent PNG with the SIMODI Gold logo and the
-    //    gold curve wave. Drawn at full page width on top of the gradient so
-    //    only the logo + curves are visible (no dark backdrop).
-    doc.image(ASSET_HEADER, 0, 0, { width: PAGE_W });
-
-    // 4. Title — "CERTIFICATE" serif headline
-    let y = HEADER_HEIGHT + 70;
-    doc
-      .font("Times-Roman")
-      .fillColor(COLOR_TEXT)
-      .fontSize(40)
-      .text("CERTIFICATE", 0, y, {
+    const logoSize = pngSize(logoBuf);
+    const logoW = 120;
+    const logoH = logoSize && logoSize.width > 0 ? (logoW * logoSize.height) / logoSize.width : 48;
+    let y = contentY + 8;
+    try {
+      doc.image(logoBuf, contentX + (contentW - logoW) / 2, y, { width: logoW, height: logoH });
+    } catch {
+      doc.font("Helvetica-Bold").fontSize(16).fillColor(COLOR_GOLD).text("SIMODI GOLD", contentX, y, {
+        width: contentW,
         align: "center",
-        width: PAGE_W,
-        characterSpacing: 3,
       });
+    }
+    y += logoH + 14;
 
-    y += 52;
-    doc.fontSize(14).text("O F   I N V E S T M E N T", 0, y, {
-      align: "center",
-      width: PAGE_W,
-      characterSpacing: 4,
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(18)
+      .fillColor(COLOR_TEXT)
+      .text(`${titleMetal} OWNERSHIP CERTIFICATE`, contentX, y, {
+        width: contentW,
+        align: "center",
+        characterSpacing: 1,
+      });
+    y += 24;
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(8)
+      .fillColor(COLOR_GOLD)
+      .text("PHYSICAL COMMODITY PURCHASE AND CUSTODY RECORD", contentX, y, {
+        width: contentW,
+        align: "center",
+        characterSpacing: 1.2,
+      });
+    y += 22;
+
+    const infoH = 34;
+    doc.save();
+    doc.roundedRect(contentX, y, contentW, infoH, 4).fill(COLOR_GOLD_FILL);
+    doc.roundedRect(contentX, y, contentW, infoH, 4).lineWidth(0.8).strokeColor(COLOR_GOLD_LIGHT).stroke();
+    doc.restore();
+    drawLabel(doc, "CERTIFICATE NO.", contentX + 16, y + 8, contentW / 2 - 24);
+    drawValue(doc, certificateNo, contentX + 16, y + 18, contentW / 2 - 24, { size: 10 });
+    drawLabel(doc, "DATE", contentX + contentW / 2 + 8, y + 8, contentW / 2 - 24, "right");
+    drawValue(doc, dateLong, contentX + contentW / 2 + 8, y + 18, contentW / 2 - 24, {
+      size: 10,
+      align: "right",
+    });
+    y += infoH + 18;
+
+    drawLabel(doc, "CERTIFIED OWNER", contentX, y, contentW);
+    y += 14;
+    drawValue(doc, ownerName, contentX, y, contentW * 0.55, { size: 14 });
+    drawLabel(doc, "PHONE NUMBER", contentX + contentW * 0.55, y - 2, contentW * 0.45, "right");
+    drawValue(doc, ownerPhone, contentX + contentW * 0.55, y + 10, contentW * 0.45, {
+      size: 10,
+      align: "right",
+    });
+    y += 22;
+    doc.font("Helvetica").fontSize(9).fillColor(COLOR_MUTED).text(ownerEmail, contentX, y, {
+      width: contentW * 0.6,
+    });
+    y += 24;
+
+    const gap = 10;
+    const boxW = (contentW - gap * 2) / 3;
+    const boxH = 52;
+    const row1Y = y;
+    drawDetailBox(doc, contentX, row1Y, boxW, boxH, "METAL", metalLabel);
+    drawDetailBox(doc, contentX + boxW + gap, row1Y, boxW, boxH, "PURITY", PURITY_LABEL[metalKey]);
+    drawDetailBox(doc, contentX + (boxW + gap) * 2, row1Y, boxW, boxH, "WEIGHT OWNED", `${grams} grams`, {
+      color: COLOR_GOLD,
+      size: 12,
     });
 
-    // 5. Reference code chip (small, gold) — only rendered when we have a
-    //    real human-readable code; we never show the ObjectId here.
-    y += 56;
-    if (refDisplay) {
-      doc
-        .font("Helvetica-Bold")
-        .fontSize(13)
-        .fillColor(COLOR_ACCENT)
-        .text(refDisplay, 0, y, {
-          align: "center",
-          width: PAGE_W,
-          characterSpacing: 1.5,
-        });
-    }
+    const row2Y = row1Y + boxH + gap;
+    drawDetailBox(doc, contentX, row2Y, boxW, boxH, "PRICE PER GRAM", pricePerGram);
+    drawDetailBox(doc, contentX + boxW + gap, row2Y, boxW, boxH, "TOTAL PAID", totalPaid);
+    drawDetailBox(doc, contentX + (boxW + gap) * 2, row2Y, boxW, boxH, "STORAGE", "Pooled custody");
+    y = row2Y + boxH + 16;
 
-    // 6. Headline grams + metal
-    y += 22;
-    doc
-      .font("Helvetica-Bold")
-      .fontSize(36)
-      .fillColor(COLOR_TEXT)
-      .text(`${grams} Gram ${metalLabel}`, 0, y, {
-        align: "center",
-        width: PAGE_W,
-      });
-
-    // 7. Divider line under headline
-    y += 58;
-    doc
-      .moveTo(60, y)
-      .lineTo(PAGE_W - 60, y)
-      .lineWidth(1)
-      .strokeColor(COLOR_DIVIDER)
-      .stroke();
-
-    // 8. Description paragraph
-    y += 16;
-    const descriptionText = refDisplay
-      ? `This is to certify that the investment under reference ${refDisplay} has been successfully recorded in Simodi ${metalLabel} on the below mentioned date.`
-      : `This is to certify that the investment has been successfully recorded in Simodi ${metalLabel} on the below mentioned date.`;
-    doc
-      .font("Helvetica")
-      .fontSize(10)
-      .fillColor(COLOR_TEXT)
-      .text(descriptionText, 60, y, {
-        width: PAGE_W - 120,
-        align: "left",
-        lineGap: 1,
-      });
-
-    // 9. Investment details block
-    y += 42;
-    doc
-      .font("Helvetica-Bold")
-      .fontSize(12)
-      .fillColor(COLOR_TEXT)
-      .text("Investment Details:", 60, y);
-
-    y += 22;
-    const detailRows = [
-      ["Asset Type", ASSET_DESCRIPTION[metalKey]],
-      ["Total Grams", `${grams}g`],
-      ["Price per Gram", pricePerGram || "—"],
-      ["Total Purchase Price", totalPrice ? `${totalPrice} (Total Price)` : "—"],
-      ["Transaction Date", transactionDate || "—"],
-      ["Storage Location", "Insured Simodi Vault"],
-    ];
-
-    for (const [label, value] of detailRows) {
-      drawBullet(doc, 76, y + 5);
-      doc
-        .font("Helvetica-Bold")
-        .fontSize(10)
-        .fillColor(COLOR_TEXT)
-        .text(`${label}: `, 88, y, { continued: true });
-      doc.font("Helvetica").text(String(value ?? ""));
-      y += 18;
-    }
-
-    // 10. Footer block: filled DATE line on the left, digital-signature stamp
-    //     on the right (replaces the empty SIGNATURE underline), and a small
-    //     verification disclaimer beneath both.
-    const lineY = PAGE_H - 95;
-    const lineWidth = 170;
-    const padding = 60;
-
-    // Left side — date written on the line, label below
-    doc
-      .font("Helvetica")
-      .fontSize(11)
-      .fillColor(COLOR_TEXT)
-      .text(
-        transactionDate || "—",
-        padding,
-        lineY - 16,
-        { width: lineWidth, align: "center" },
-      );
-    doc
-      .moveTo(padding, lineY)
-      .lineTo(padding + lineWidth, lineY)
-      .lineWidth(1)
-      .strokeColor(COLOR_DIVIDER)
-      .stroke();
-    doc
-      .font("Helvetica")
-      .fontSize(9)
-      .fillColor(COLOR_TEXT)
-      .text("DATE", padding, lineY + 6, {
-        width: lineWidth,
-        align: "center",
-        characterSpacing: 2,
-      });
-
-    // Right side — digital signature stamp instead of an empty underline.
-    // Uses a thin rounded rectangle so it visually reads as an official seal.
-    const stampX = PAGE_W - padding - lineWidth;
-    const stampY = lineY - 32;
-    const stampH = 36;
-    doc
-      .save()
-      .roundedRect(stampX, stampY, lineWidth, stampH, 4)
-      .lineWidth(1)
-      .strokeColor(COLOR_DIVIDER)
-      .stroke();
-    // Checkmark glyph + label inside the stamp
-    doc
-      .font("Helvetica-Bold")
-      .fontSize(10)
-      .fillColor(COLOR_TEXT)
-      .text(
-        "DIGITALLY SIGNED",
-        stampX,
-        stampY + 7,
-        { width: lineWidth, align: "center", characterSpacing: 1.5 },
-      );
-    doc
-      .font("Helvetica")
-      .fontSize(8)
-      .fillColor(COLOR_TEXT)
-      .text(
-        "by Simodi Gold",
-        stampX,
-        stampY + 21,
-        { width: lineWidth, align: "center" },
-      );
+    const confirmH = 78;
+    doc.save();
+    doc.roundedRect(contentX, y, contentW, confirmH, 4).lineWidth(1).strokeColor(COLOR_GOLD).stroke();
     doc.restore();
+    drawLabel(doc, "OWNERSHIP CONFIRMATION", contentX + 12, y + 10, contentW - 24);
     doc
       .font("Helvetica")
       .fontSize(9)
       .fillColor(COLOR_TEXT)
-      .text("SIGNATURE", stampX, lineY + 6, {
-        width: lineWidth,
-        align: "center",
-        characterSpacing: 2,
+      .text(confirmationText, contentX + 12, y + 24, {
+        width: contentW - 24,
+        lineGap: 2,
       });
+    y += confirmH + 16;
 
-    // Bottom disclaimer + verification line for traceability. The verification
-    // line is omitted entirely when no human-readable reference exists, so the
-    // certificate never advertises a missing/blank trace ID.
+    drawLabel(doc, "AUTHENTICATION", contentX, y, contentW);
+    y += 12;
+    const authW = (contentW - gap * 2) / 3;
+    const authH = 52;
+    drawAuthBox(doc, contentX, y, authW, authH, "TRANSACTION REFERENCE", transactionRef);
+    drawAuthBox(doc, contentX + authW + gap, y, authW, authH, "VERIFICATION REFERENCE / QR", transactionRef);
+    drawAuthBox(doc, contentX + (authW + gap) * 2, y, authW, authH, "AUTHORIZED SIGNATURE", "Digitally signed by SIMODI GOLD");
+    y += authH + 18;
+
+    const footerY = frameY + frameH - BORDER_INSET - 52;
     doc
       .font("Helvetica")
-      .fontSize(8)
-      .fillColor(COLOR_TEXT)
+      .fontSize(6.5)
+      .fillColor(COLOR_MUTED)
       .text(
-        "This is a digitally generated certificate issued by Simodi Gold and does not require a physical signature.",
-        padding,
-        PAGE_H - 45,
-        { width: PAGE_W - padding * 2, align: "center" },
+        "SIMODI GOLD FZCO is a DMCC-licensed precious-metals trader and is not acting as an investment fund or investment manager. This certificate records ownership of physical gold; it is not a security, deposit, managed investment or guarantee of value. Issued solely by SIMODI GOLD FZCO and not issued, approved or guaranteed by DMCC or any UAE financial regulator. Subject to the SIMODI GOLD Customer Agreement.",
+        contentX,
+        footerY,
+        { width: contentW, align: "center", lineGap: 1 },
       );
-    if (refDisplay) {
-      doc
-        .font("Helvetica-Bold")
-        .fontSize(8)
-        .fillColor(COLOR_TEXT)
-        .text(
-          `Verification reference: ${refDisplay}   |   Issued: ${transactionDate || formatDate(new Date())}`,
-          padding,
-          PAGE_H - 30,
-          { width: PAGE_W - padding * 2, align: "center", characterSpacing: 0.5 },
-        );
-    }
+
+    const bottomY = frameY + frameH - BORDER_INSET - 18;
+    doc.font("Helvetica").fontSize(7).fillColor(COLOR_MUTED);
+    doc.text("SIMODI GOLD FZCO | Dubai, United Arab Emirates", contentX, bottomY, {
+      width: contentW / 2,
+      align: "left",
+    });
+    doc.text("info@simodigold.com | www.simodigold.com", contentX + contentW / 2, bottomY, {
+      width: contentW / 2,
+      align: "right",
+    });
 
     doc.end();
   });
 }
 
-module.exports = { buildCertificatePdf, safeFilename, assertCertificateAssets };
+module.exports = {
+  buildCertificatePdf,
+  safeFilename,
+  assertCertificateAssets,
+  CERTIFICATE_LOGO_URL,
+  CERTIFICATE_WATERMARK_URL,
+};

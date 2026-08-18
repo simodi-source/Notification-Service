@@ -9,6 +9,7 @@ const OTP_EXPIRY_MINUTES = 5;
 const EVENT_CHANNELS = {
   "auth.otp": ["email"],
   "auth.password_reset": ["email"],
+  "admin.mfa_otp": ["email"],
   "wallet.withdrawal_otp": ["email"],
   "mobile_money.otp": ["sms"],
   "kyc.approved": ["email", "push"],
@@ -240,6 +241,30 @@ function renderTemplate(templateCode, payload, user, locale) {
             heading: c.heading,
             name,
             intro: c.intro,
+            callout: otpCallout(String(payload.otpCode || ""), i18n.otpLabel),
+            paragraphs: [c.expires(OTP_EXPIRY_MINUTES)],
+            footnote: c.footnote,
+          }),
+        },
+        push: null,
+      };
+    }
+    case "admin_mfa_otp": {
+      const c = i18n.admin_mfa_otp;
+      const adminName = String(payload.adminName || "Admin");
+      const adminEmail = String(payload.adminEmail || "");
+      const adminRoles = String(payload.adminRoles || "Admin");
+      const title = c.subject(adminName, adminRoles);
+      return {
+        email: {
+          subject: title,
+          html: brandedEmail({
+            ...emailLang,
+            title,
+            eyebrow: c.eyebrow,
+            heading: c.heading,
+            name: "Super Admin",
+            intro: c.intro(adminName, adminEmail, adminRoles),
             callout: otpCallout(String(payload.otpCode || ""), i18n.otpLabel),
             paragraphs: [c.expires(OTP_EXPIRY_MINUTES)],
             footnote: c.footnote,

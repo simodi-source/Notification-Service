@@ -11,7 +11,7 @@ const http = require("http");
 const PDFDocument = require("pdfkit");
 
 const INVOICE_HEADER_IMAGE_URL_TAX =
-  "https://simodi-gold-bucket.s3.ap-south-1.amazonaws.com/uploads/profile_avatar/admin/6a3114a9c0774fb883089dc9/70472190-27f0-4fe8-a53d-152e16dff48d.png";
+  "https://simodi-gold-bucket.s3.ap-south-1.amazonaws.com/uploads/profile_avatar/admin/6a3114a9c0774fb883089dc9/8c0fe08d-156a-4a22-a931-ca4929f53777.png";
 const INVOICE_HEADER_IMAGE_URL_PURCHASE =
   "https://simodi-gold-bucket.s3.ap-south-1.amazonaws.com/uploads/profile_avatar/admin/6a3114a9c0774fb883089dc9/68a595af-8227-4fcb-91c2-1d4a4a5a3061.png";
 

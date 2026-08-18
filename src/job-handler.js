@@ -221,7 +221,7 @@ async function materializeAttachments(descriptors, user) {
   for (const desc of descriptors) {
     if (!desc || typeof desc !== "object") continue;
     if (desc.type === "trade_certificate") {
-      const enriched = await enrichTradeCertificateDescriptor(desc);
+      const enriched = await enrichTradeCertificateDescriptor({ ...desc, ...customer });
       const pdf = await buildCertificatePdf(enriched);
       if (!Buffer.isBuffer(pdf) || pdf.length === 0) {
         throw new Error("Certificate PDF render returned empty buffer");

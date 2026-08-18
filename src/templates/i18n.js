@@ -21,6 +21,16 @@ const EN = {
     footnote:
       "If you did not request a password reset, you can safely ignore this email — your password will remain unchanged. For your security, never share this code with anyone, including Simodi staff.",
   },
+  admin_mfa_otp: {
+    subject: (adminName, adminRoles) => `Simodi Admin MFA — ${adminName} (${adminRoles})`,
+    eyebrow: "Admin sign-in",
+    heading: "Sign-in code for an admin",
+    intro: (adminName, adminEmail, adminRoles) =>
+      `${adminName} (${adminEmail}) is signing in as ${adminRoles}. Give them this code only if you expect this login.`,
+    expires: (mins) => `This code expires in ${mins} minutes and can be used only once.`,
+    footnote:
+      "If you did not expect this, do not share the code and disable the account. Never send this code by email to the person signing in unless you have confirmed the request.",
+  },
   wallet_withdrawal_otp: {
     subject: "Simodi — Withdrawal verification",
     eyebrow: "Withdrawal verification",
@@ -74,6 +84,16 @@ const AR = {
     expires: (mins) => `ينتهي هذا الرمز خلال ${mins} دقائق ويمكن استخدامه مرة واحدة فقط.`,
     footnote:
       "إذا لم تطلب إعادة تعيين كلمة المرور، يمكنك تجاهل هذا البريد بأمان — ستبقى كلمة مرورك كما هي. لا تشارك هذا الرمز مع أي شخص.",
+  },
+  admin_mfa_otp: {
+    subject: (adminName, adminRoles) => `سيمودي — رمز دخول المسؤول — ${adminName} (${adminRoles})`,
+    eyebrow: "تسجيل دخول المسؤول",
+    heading: "رمز تسجيل دخول لمسؤول",
+    intro: (adminName, adminEmail, adminRoles) =>
+      `${adminName} (${adminEmail}) يحاول تسجيل الدخول بصلاحية ${adminRoles}. أعطه هذا الرمز فقط إذا كنت تتوقع هذا الدخول.`,
+    expires: (mins) => `ينتهي هذا الرمز خلال ${mins} دقائق ويمكن استخدامه مرة واحدة فقط.`,
+    footnote:
+      "إذا لم تكن تتوقع هذا الدخول، لا تشارك الرمز وعطّل الحساب.",
   },
   wallet_withdrawal_otp: {
     subject: "سيمودي — التحقق من السحب",

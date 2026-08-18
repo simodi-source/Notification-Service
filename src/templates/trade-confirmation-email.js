@@ -205,7 +205,7 @@ function buildTradeConfirmationEmail(input) {
   if (tradeDate) rows.push({ label: "Date", value: tradeDate });
 
   const appNote = isBuy
-    ? "Your sales invoice and investment certificate are attached to this email. You can also view this trade and your updated metal balance in the SIMODI app."
+    ? "Your sales invoice and ownership certificate are attached to this email. You can also view this trade and your updated metal balance in the SIMODI app."
     : "Your purchase voucher is attached to this email. You can also view this trade and your updated metal balance in the SIMODI app.";
 
   const html = `<!DOCTYPE html>
