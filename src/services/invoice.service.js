@@ -401,9 +401,243 @@ async function buildInvoicePdf(input) {
   });
 }
 
+function martSafeFilename(orderCode) {
+  return safeFilename(orderCode, false);
+}
+
+function pickLocalizedName(value) {
+  if (typeof value === "string") return value;
+  if (value && typeof value === "object") {
+    return value.en || value.ar || "Product";
+  }
+  return "Product";
+}
+
+/**
+ * @param {{
+ *   referenceCode?: string,
+ *   quoteCurrency?: string,
+ *   executedAt?: string | Date,
+ *   paymentMethod?: string,
+ *   customerName?: string,
+ *   customerEmail?: string,
+ *   customerPhone?: string,
+ *   shipTo?: { name?: string, lines?: string[], phone?: string } | null,
+ *   items?: Array<{ description: string, quantity: string, unitPrice: string, total: string }>,
+ *   totals?: Array<{ label: string, value: string, emphasize?: boolean }>,
+ *   note?: string,
+ * }} input
+ * @returns {Promise<Buffer>}
+ */
+async function buildMartInvoicePdf(input) {
+  const headerBuf = await loadHeaderImage(INVOICE_HEADER_IMAGE_URL_TAX);
+  const ref = sanitizeReferenceCode(input.referenceCode);
+  const currency = resolveCurrency(input);
+  const dateIssued = formatDate(input.executedAt);
+  const customerName = String(input.customerName || "Customer").trim() || "Customer";
+  const customerEmail = String(input.customerEmail || "").trim();
+  const customerPhone = String(input.customerPhone || "").trim();
+  const items = Array.isArray(input.items) ? input.items : [];
+  const totals = Array.isArray(input.totals) ? input.totals : [];
+  const note =
+    input.note?.trim() ||
+    "Thank you for your purchase. This invoice confirms your Simodi Mart order. Please retain it for your records.";
+
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({
+      size: "A4",
+      margin: 0,
+      info: {
+        Title: `Sales Invoice ${ref}`,
+        Author: "SIMODI GOLD",
+      },
+    });
+    const chunks = [];
+    doc.on("data", (chunk) => chunks.push(chunk));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
+
+    doc.rect(0, 0, PAGE_W, PAGE_H).fill(COLOR_BODY);
+
+    const png = pngSize(headerBuf);
+    const headerH = png && png.width > 0 ? (PAGE_W * png.height) / png.width : 150;
+    try {
+      doc.image(headerBuf, 0, 0, { width: PAGE_W, height: headerH });
+    } catch {
+      doc.rect(0, 0, PAGE_W, headerH).fill("#000000");
+    }
+
+    const pad = 28;
+    const leftW = 340;
+    const rightW = 200;
+    const rightX = PAGE_W - pad - rightW;
+    let y = headerH + 16;
+
+    doc.font("Helvetica-Bold").fontSize(13).fillColor(COLOR_TEXT);
+    y = flowText(doc, "Supplier", pad, y, leftW, { gap: 4 });
+    doc.font("Helvetica-Bold").fontSize(11);
+    y = flowText(doc, SUPPLIER.name, pad, y, leftW, { gap: 5 });
+    doc.font("Helvetica").fontSize(9).fillColor(COLOR_MUTED);
+    for (const line of SUPPLIER.addressLines) {
+      doc.text(line, pad, y, { width: leftW, lineBreak: false });
+      y += 13;
+    }
+    doc.text(`TRN: ${SUPPLIER.trn}`, pad, y, { width: leftW, lineBreak: false });
+    y += 13;
+
+    let ry = headerH + 16;
+    ry = drawMetaRight(doc, "VOUCHER NO.:", ref || "—", rightX, ry, rightW);
+    ry = drawMetaRight(doc, "TRANSACTION REF.:", ref || "—", rightX, ry, rightW);
+    ry = drawMetaRight(doc, "DATE OF SALE:", dateIssued || "—", rightX, ry, rightW);
+    ry = drawMetaRight(doc, "PAYMENT STATUS:", "PAID", rightX, ry, rightW);
+    if (input.paymentMethod) {
+      ry = drawMetaRight(doc, "PAYMENT METHOD:", input.paymentMethod, rightX, ry, rightW);
+    }
+
+    y = Math.max(y, ry) + 18;
+    doc.font("Helvetica-Bold").fontSize(12).fillColor(COLOR_TEXT);
+    y = flowText(doc, "Customer", pad, y, leftW, { gap: 6 });
+    doc.font("Helvetica-Bold").fontSize(11);
+    y = flowText(doc, customerName, pad, y, leftW, { gap: 4 });
+    doc.font("Helvetica").fontSize(9).fillColor(COLOR_MUTED);
+    if (customerEmail) y = flowText(doc, customerEmail, pad, y, leftW, { gap: 2 });
+    if (customerPhone) y = flowText(doc, customerPhone, pad, y, leftW, { gap: 2 });
+
+    if (input.shipTo?.name) {
+      y += 8;
+      doc.font("Helvetica-Bold").fontSize(11).fillColor(COLOR_TEXT).text("Ship To", pad, y);
+      y += 14;
+      doc.font("Helvetica-Bold").fontSize(10).text(input.shipTo.name, pad, y, { width: leftW });
+      y += 13;
+      doc.font("Helvetica").fontSize(9).fillColor(COLOR_MUTED);
+      for (const line of input.shipTo.lines || []) {
+        if (!line.trim()) continue;
+        doc.text(line, pad, y, { width: leftW, lineBreak: false });
+        y += 12;
+      }
+      if (input.shipTo.phone) {
+        doc.text(input.shipTo.phone, pad, y, { width: leftW, lineBreak: false });
+        y += 12;
+      }
+    }
+
+    y += 16;
+    const tableX = pad;
+    const tableW = PAGE_W - pad * 2;
+    const colWs = [32, 148, 68, 100, 42, 0];
+    colWs[5] = tableW - colWs.slice(0, 5).reduce((a, b) => a + b, 0);
+    const colAlign = ["center", "left", "center", "right", "center", "right"];
+    const headers = [
+      "Item",
+      "Description",
+      "Qty",
+      `Unit Price (${currency})`,
+      "VAT",
+      `Total (${currency})`,
+    ];
+    const headH = 26;
+    const rowH = 28;
+
+    doc.rect(tableX, y, tableW, headH).fill(COLOR_TABLE_HEADER);
+    doc.font("Helvetica-Bold").fontSize(7.5).fillColor("#ffffff");
+    let cx = tableX;
+    headers.forEach((h, i) => {
+      drawTableCell(doc, h, cx, y, colWs[i], headH, colAlign[i]);
+      cx += colWs[i];
+    });
+    y += headH;
+
+    doc.font("Helvetica").fontSize(8).fillColor(COLOR_TEXT);
+    items.forEach((line, index) => {
+      const values = [
+        String(index + 1),
+        line.description,
+        line.quantity,
+        line.unitPrice,
+        "-",
+        line.total,
+      ];
+      cx = tableX;
+      values.forEach((v, i) => {
+        drawTableCell(doc, v, cx, y, colWs[i], rowH, colAlign[i]);
+        cx += colWs[i];
+      });
+      doc
+        .moveTo(tableX, y + rowH)
+        .lineTo(tableX + tableW, y + rowH)
+        .strokeColor(COLOR_ROW_BORDER)
+        .lineWidth(0.6)
+        .stroke();
+      y += rowH;
+    });
+
+    y += 12;
+    const totalsW = 230;
+    const totalsX = PAGE_W - pad - totalsW;
+    const drawTotalRow = (label, value, emphasize) => {
+      const h = emphasize ? 26 : 20;
+      if (emphasize) {
+        doc.rect(totalsX, y, totalsW, h).fill(COLOR_TABLE_HEADER);
+        doc.font("Helvetica-Bold").fontSize(10).fillColor("#ffffff");
+      } else {
+        doc.font("Helvetica").fontSize(9).fillColor(COLOR_TEXT);
+      }
+      doc.text(label, totalsX + 10, y + 6, { width: 90, lineBreak: false });
+      doc.font("Helvetica-Bold").text(value, totalsX + 100, y + 6, {
+        width: totalsW - 112,
+        align: "right",
+        lineBreak: false,
+      });
+      y += h;
+    };
+    for (const row of totals) {
+      drawTotalRow(row.label, row.value, Boolean(row.emphasize));
+    }
+
+    y += 20;
+    doc.font("Helvetica-Bold").fontSize(10).fillColor(COLOR_TEXT);
+    const noteLabel = "Note  ";
+    const noteLabelW = doc.widthOfString(noteLabel);
+    doc.text(noteLabel, pad, y, { lineBreak: false });
+    doc.font("Helvetica").fillColor(COLOR_MUTED).text(note, pad + noteLabelW, y, {
+      width: PAGE_W - pad * 2 - noteLabelW,
+    });
+
+    const boxX = pad + 36;
+    const boxW = PAGE_W - pad * 2 - 72;
+    const boxH = 44;
+    const boxY = PAGE_H - 88;
+    doc.save();
+    doc.rect(boxX, boxY, boxW, boxH).fill("#ffffff");
+    doc.rect(boxX, boxY, boxW, boxH).lineWidth(0.8).strokeColor("#d0d0d0").stroke();
+    doc.restore();
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(8)
+      .fillColor(COLOR_MUTED)
+      .text(DISCLAIMER, boxX + 12, boxY + 12, { width: boxW - 24, align: "center" });
+
+    doc
+      .font("Helvetica")
+      .fontSize(8)
+      .fillColor(COLOR_MUTED)
+      .text(
+        "Generated by SIMODI GOLD. This document is a transaction record only.",
+        pad,
+        PAGE_H - 28,
+        { width: PAGE_W - pad * 2, align: "center" },
+      );
+
+    doc.end();
+  });
+}
+
 module.exports = {
   buildInvoicePdf,
+  buildMartInvoicePdf,
   safeFilename,
+  martSafeFilename,
+  pickLocalizedName,
   INVOICE_HEADER_IMAGE_URL_TAX,
   INVOICE_HEADER_IMAGE_URL_PURCHASE,
 };

@@ -766,26 +766,58 @@ function renderTemplate(templateCode, payload, user, locale) {
     }
     case "mart_order_confirmed": {
       const orderCode = payload.orderCode ? String(payload.orderCode) : "";
+      const orderId = payload.orderId ? String(payload.orderId) : null;
+      const isVaultStorage = payload.fulfillmentMode === "vault_storage";
       const title = "Simodi — Order confirmed";
       const rows = [];
       if (orderCode) rows.push({ label: "Order", value: orderCode });
+      const attachments =
+        isVaultStorage && orderId
+          ? [
+              {
+                type: "mart_invoice",
+                orderId,
+                orderCode: orderCode || null,
+                referenceCode: orderCode || null,
+              },
+              {
+                type: "mart_certificate",
+                orderId,
+                orderCode: orderCode || null,
+                referenceCode: orderCode || null,
+              },
+            ]
+          : [];
+      const intro = isVaultStorage
+        ? `Thank you for your purchase. Your order ${orderCode} has been confirmed and your bars have been allocated to vault storage.`
+        : `Thank you for your purchase. Your order ${orderCode} has been confirmed and is now being prepared.`;
+      const footnote = isVaultStorage
+        ? "Your sales invoice and ownership certificate are attached. You can view your stored bars anytime in the Simodi app."
+        : "You can track your order status anytime in the Simodi app.";
       return {
         email: {
           subject: title,
           html: brandedEmail({
             title,
             eyebrow: "Order update",
-            heading: "Your order is confirmed",
+            heading: isVaultStorage ? "Your order is stored in the vault" : "Your order is confirmed",
             name,
-            intro: `Thank you for your purchase. Your order ${orderCode} has been confirmed and is now being prepared.`,
+            intro,
             callout: detailsCallout(rows),
-            footnote: "You can track your order status anytime in the Simodi app.",
+            footnote,
           }),
+          attachments,
         },
         push: {
-          title: "Order confirmed",
-          body: orderCode ? `Order ${orderCode} is confirmed and being prepared.` : "Your order is confirmed and being prepared.",
-          data: { type: "mart.order.confirmed", orderId: String(payload.orderId || ""), orderCode },
+          title: isVaultStorage ? "Order stored in vault" : "Order confirmed",
+          body: isVaultStorage
+            ? orderCode
+              ? `Order ${orderCode} is confirmed and stored in your vault.`
+              : "Your order is confirmed and stored in your vault."
+            : orderCode
+              ? `Order ${orderCode} is confirmed and being prepared.`
+              : "Your order is confirmed and being prepared.",
+          data: { type: "mart.order.confirmed", orderId: orderId || "", orderCode },
         },
       };
     }
@@ -855,9 +887,20 @@ function renderTemplate(templateCode, payload, user, locale) {
     }
     case "mart_order_delivered": {
       const orderCode = payload.orderCode ? String(payload.orderCode) : "";
+      const orderId = payload.orderId ? String(payload.orderId) : null;
       const title = "Simodi — Order delivered";
       const rows = [];
       if (orderCode) rows.push({ label: "Order", value: orderCode });
+      const attachments = orderId
+        ? [
+            {
+              type: "mart_invoice",
+              orderId,
+              orderCode: orderCode || null,
+              referenceCode: orderCode || null,
+            },
+          ]
+        : [];
       return {
         email: {
           subject: title,
@@ -868,13 +911,14 @@ function renderTemplate(templateCode, payload, user, locale) {
             name,
             intro: `Your order ${orderCode} has been delivered. We hope you love it.`,
             callout: detailsCallout(rows),
-            footnote: "Thank you for shopping with Simodi.",
+            footnote: "Your sales invoice is attached for your records. Thank you for shopping with Simodi.",
           }),
+          attachments,
         },
         push: {
           title: "Order delivered",
           body: orderCode ? `Order ${orderCode} has been delivered.` : "Your order has been delivered.",
-          data: { type: "mart.order.delivered", orderId: String(payload.orderId || ""), orderCode },
+          data: { type: "mart.order.delivered", orderId: orderId || "", orderCode },
         },
       };
     }

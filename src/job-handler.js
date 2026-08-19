@@ -7,7 +7,13 @@ const smsTwilioProvider = require("./providers/sms.twilio");
 const smsTelesomProvider = require("./providers/sms.telesom");
 const whatsappProvider = require("./providers/whatsapp.twilio");
 const { buildCertificatePdf, safeFilename: certificateFilename } = require("./services/certificate.service");
-const { buildInvoicePdf, safeFilename: invoiceFilename } = require("./services/invoice.service");
+const {
+  buildInvoicePdf,
+  buildMartInvoicePdf,
+  safeFilename: invoiceFilename,
+  martSafeFilename,
+  pickLocalizedName,
+} = require("./services/invoice.service");
 const { validateNotificationJob } = require("./queue/job-contract");
 
 /** OTP / transactional SMS must send even when user prefs.sms is false. */
@@ -242,6 +248,32 @@ async function materializeAttachments(descriptors, user) {
         filename: invoiceFilename(enriched.referenceCode, enriched.side === "sell"),
         type: "application/pdf",
       });
+    } else if (desc.type === "mart_invoice") {
+      const enriched = await enrichMartOrderDescriptor({ ...desc, ...customer });
+      const pdf = await buildMartInvoicePdf(enriched);
+      if (!Buffer.isBuffer(pdf) || pdf.length === 0) {
+        throw new Error("Mart invoice PDF render returned empty buffer");
+      }
+      out.push({
+        content: pdf,
+        filename: martSafeFilename(enriched.referenceCode),
+        type: "application/pdf",
+      });
+    } else if (desc.type === "mart_certificate") {
+      const certInputs = await enrichMartOrderCertificateInputs({ ...desc, ...customer });
+      for (const enriched of certInputs) {
+        const pdf = await buildCertificatePdf(enriched);
+        if (!Buffer.isBuffer(pdf) || pdf.length === 0) {
+          throw new Error("Mart ownership certificate PDF render returned empty buffer");
+        }
+        const suffix =
+          certInputs.length > 1 ? `-${enriched.metal === "silver" ? "Silver" : "Gold"}` : "";
+        out.push({
+          content: pdf,
+          filename: certificateFilename(`${enriched.referenceCode || "mart"}${suffix}`),
+          type: "application/pdf",
+        });
+      }
     }
   }
   return out;
@@ -351,6 +383,259 @@ async function enrichTradeCertificateDescriptor(desc) {
     );
     return { ...desc, referenceCode: humanRef };
   }
+}
+
+const PURITY_BY_METAL = { gold: "24k", silver: "999" };
+
+function decimalToNumber(value) {
+  if (value === null || value === undefined) return 0;
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value === "string") {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : 0;
+  }
+  if (value && typeof value === "object") {
+    if (typeof value.toString === "function") {
+      const n = Number(value.toString());
+      return Number.isFinite(n) ? n : 0;
+    }
+    if (value.$numberDecimal) {
+      const n = Number(value.$numberDecimal);
+      return Number.isFinite(n) ? n : 0;
+    }
+  }
+  return 0;
+}
+
+function formatMajorAmount(amountMajor, currency) {
+  return `${currency} ${Number(amountMajor).toFixed(2)}`;
+}
+
+function paymentMethodLabel(method) {
+  if (method === "card") return "Card";
+  if (method === "wallet") return "Wallet";
+  return method ? String(method) : "Wallet";
+}
+
+function buildMartShipTo(address) {
+  if (!address || typeof address !== "object") return null;
+  const lines = [
+    address.line1,
+    address.line2 || "",
+    [address.city, address.state || "", address.postalCode || ""].filter((s) => String(s).trim()).join(", "),
+    address.country,
+  ].filter((s) => String(s || "").trim());
+  return {
+    name: address.fullName || "",
+    lines,
+    phone: address.phone || "",
+  };
+}
+
+/**
+ * @param {Record<string, any>} desc
+ * @returns {Promise<Record<string, any> | null>}
+ */
+async function loadMartOrderForDescriptor(desc) {
+  const humanRef = looksLikeObjectId(desc.referenceCode)
+    ? null
+    : desc.referenceCode || desc.orderCode || null;
+
+  const query =
+    desc.orderId && mongoose.isValidObjectId(desc.orderId)
+      ? { _id: new mongoose.Types.ObjectId(String(desc.orderId)), deletedAt: null }
+      : humanRef
+        ? { orderCode: String(humanRef), deletedAt: null }
+        : null;
+
+  if (!query) return null;
+
+  try {
+    const order = await mongoose.connection.collection("mart_orders").findOne(query);
+    if (!order) return null;
+    return { order, humanRef: humanRef || order.orderCode || null };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(
+      JSON.stringify({
+        level: "warn",
+        msg: "mart order enrichment lookup failed",
+        orderId: desc.orderId,
+        orderCode: desc.orderCode,
+        error: message,
+      }),
+    );
+    return null;
+  }
+}
+
+function aggregateMartItemsByMetal(items) {
+  /** @type {Record<"gold" | "silver", { grams: number, metalValueMinor: number }>} */
+  const byMetal = {
+    gold: { grams: 0, metalValueMinor: 0 },
+    silver: { grams: 0, metalValueMinor: 0 },
+  };
+  for (const line of items || []) {
+    const metal = line.metal === "silver" ? "silver" : "gold";
+    const weight = decimalToNumber(line.weightGrams);
+    const qty = Number(line.quantity) || 1;
+    byMetal[metal].grams += weight * qty;
+    byMetal[metal].metalValueMinor += Number(line.lineMetalValueMinor || 0);
+  }
+  return Object.entries(byMetal)
+    .filter(([, v]) => v.grams > 0)
+    .map(([metal, v]) => ({
+      metal,
+      grams: v.grams,
+      gramsExact: v.grams.toFixed(3),
+      metalValueMinor: v.metalValueMinor,
+    }));
+}
+
+function buildMartInvoiceFields(order, humanRef, customer) {
+  const quoteCurrency = order.quoteCurrency === "USD" ? "USD" : "AED";
+  const fx = Number(order.fxRateUsed);
+  const fxValid = Number.isFinite(fx) && fx > 0;
+  const useUsd = quoteCurrency === "USD" && fxValid;
+  const toMajor = (minor) => {
+    const aedMajor = Number(minor || 0) / 100;
+    return useUsd ? aedMajor / fx : aedMajor;
+  };
+
+  const items = (order.items || []).map((line) => {
+    const weight = decimalToNumber(line.weightGrams);
+    const unitTotalMinor = Number(line.unitMetalValueMinor || 0) + Number(line.unitMintingMinor || 0);
+    const lineTotalMinor = Number(line.lineMetalValueMinor || 0) + Number(line.lineMintingMinor || 0);
+    const metalLabel = line.metal === "silver" ? "Silver" : "Gold";
+    return {
+      description: `${pickLocalizedName(line.name)} — ${weight.toFixed(3)}g ${metalLabel} Bar (${PURITY_BY_METAL[line.metal === "silver" ? "silver" : "gold"]})`,
+      quantity: String(line.quantity || 1),
+      unitPrice: toMajor(unitTotalMinor).toFixed(2),
+      total: formatMajorAmount(toMajor(lineTotalMinor), quoteCurrency),
+    };
+  });
+
+  const totals = [
+    {
+      label: order.metalSource === "holdings" ? "Metal Value (Holdings)" : "Metal Value",
+      value: formatMajorAmount(toMajor(order.metalAmountMinor), quoteCurrency),
+    },
+    { label: "Minting Charges", value: formatMajorAmount(toMajor(order.mintingChargesMinor), quoteCurrency) },
+    { label: `VAT (${order.vatPercent ?? 0}%)`, value: formatMajorAmount(toMajor(order.vatMinor), quoteCurrency) },
+    { label: "Shipping", value: formatMajorAmount(toMajor(order.shippingFeeMinor), quoteCurrency) },
+    {
+      label: order.processingFeePercent
+        ? `Card Processing Fee (${order.processingFeePercent}%)`
+        : "Card Processing Fee",
+      value: formatMajorAmount(toMajor(order.processingFeeMinor ?? 0), quoteCurrency),
+    },
+    {
+      label: "Total",
+      value: formatMajorAmount(toMajor(order.totalMinor), quoteCurrency),
+      emphasize: true,
+    },
+  ];
+
+  const isVaultStorage = order.fulfillmentMode === "vault_storage";
+  const note = isVaultStorage
+    ? "Thank you for your purchase. This invoice confirms your Simodi Mart order and vault storage allocation. Please retain it for your records."
+    : "Thank you for your purchase. This invoice confirms your Simodi Mart order. Please retain it for your records.";
+
+  return {
+    referenceCode: humanRef,
+    quoteCurrency,
+    executedAt: order.paidAt || order.createdAt || null,
+    paymentMethod: paymentMethodLabel(order.paymentMethod),
+    customerName: customer.customerName,
+    customerEmail: customer.customerEmail,
+    customerPhone: customer.customerPhone,
+    shipTo: buildMartShipTo(order.shippingAddress),
+    items,
+    totals,
+    note,
+  };
+}
+
+/**
+ * Loads a mart order from Mongo when the queue payload is missing invoice fields.
+ *
+ * @param {Record<string, any>} desc
+ * @returns {Promise<Record<string, any>>}
+ */
+async function enrichMartOrderDescriptor(desc) {
+  const humanRef = looksLikeObjectId(desc.referenceCode)
+    ? null
+    : desc.referenceCode || desc.orderCode || null;
+
+  if (Array.isArray(desc.items) && desc.items.length > 0 && Array.isArray(desc.totals) && desc.totals.length > 0) {
+    return { ...desc, referenceCode: humanRef };
+  }
+
+  const loaded = await loadMartOrderForDescriptor(desc);
+  if (!loaded) return { ...desc, referenceCode: humanRef };
+
+  const { order, humanRef: resolvedRef } = loaded;
+  const invoiceFields = buildMartInvoiceFields(order, resolvedRef, {
+    customerName: desc.customerName,
+    customerEmail: desc.customerEmail,
+    customerPhone: desc.customerPhone,
+  });
+
+  return { ...desc, ...invoiceFields };
+}
+
+/**
+ * One ownership certificate per metal type on the order (aggregated grams + value).
+ *
+ * @param {Record<string, any>} desc
+ * @returns {Promise<Array<Record<string, any>>>}
+ */
+async function enrichMartOrderCertificateInputs(desc) {
+  const humanRef = looksLikeObjectId(desc.referenceCode)
+    ? null
+    : desc.referenceCode || desc.orderCode || null;
+
+  if (desc.metal && (desc.gramsExact || desc.grams != null) && desc.totalAedMajor != null) {
+    return [{ ...desc, referenceCode: humanRef }];
+  }
+
+  const loaded = await loadMartOrderForDescriptor(desc);
+  if (!loaded) return [{ ...desc, referenceCode: humanRef }];
+
+  const { order, humanRef: resolvedRef } = loaded;
+  const quoteCurrency = order.quoteCurrency === "USD" ? "USD" : "AED";
+  const fx = Number(order.fxRateUsed);
+  const fxValid = Number.isFinite(fx) && fx > 0;
+  const metals = aggregateMartItemsByMetal(order.items);
+
+  if (metals.length === 0) {
+    return [{ ...desc, referenceCode: resolvedRef, metal: "gold", grams: 0, gramsExact: "0.000" }];
+  }
+
+  return metals.map((m) => {
+    const totalAedMajor = m.metalValueMinor / 100;
+    const totalUsdMajor = fxValid ? totalAedMajor / fx : null;
+    const priceAedPerGramMajor = m.grams > 0 ? totalAedMajor / m.grams : null;
+    const priceUsdPerGramMajor =
+      fxValid && priceAedPerGramMajor != null ? priceAedPerGramMajor / fx : null;
+
+    return {
+      ...desc,
+      referenceCode: resolvedRef,
+      metal: m.metal,
+      grams: m.grams,
+      gramsExact: m.gramsExact,
+      quoteCurrency,
+      priceAedPerGramMajor,
+      priceUsdPerGramMajor,
+      totalAedMajor,
+      totalUsdMajor,
+      executedAt: order.paidAt || order.createdAt || null,
+      customerName: desc.customerName,
+      customerEmail: desc.customerEmail,
+      customerPhone: desc.customerPhone,
+    };
+  });
 }
 
 /** 24 hex chars → looks like a Mongo ObjectId; should never appear on a certificate. */
