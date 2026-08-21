@@ -1,5 +1,5 @@
 const { mongoose } = require("./db/mongo");
-const { UserModel, writeLog } = require("./db/notification-log");
+const { UserModel, writeLog, findNotificationUser } = require("./db/notification-log");
 const { EVENT_CHANNELS, renderTemplate } = require("./templates");
 const emailProvider = require("./providers/email.bird");
 const pushProvider = require("./providers/push.fcm");
@@ -36,9 +36,18 @@ async function handleNotificationJob(job) {
     locale: jobLocale,
   } = job.data;
 
-  let user = null;
-  if (userId && mongoose.isValidObjectId(userId)) {
-    user = await UserModel.findById(userId).lean();
+  const user = await findNotificationUser(userId);
+  if (userId && !user) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        msg: "notification user not found",
+        userId: String(userId),
+        event,
+        mongoReadyState: mongoose.connection.readyState,
+        dbName: mongoose.connection.name || null,
+      }),
+    );
   }
 
   const prefs = user?.notificationPreferences || {
@@ -87,7 +96,13 @@ async function handleNotificationJob(job) {
 
       if (channel === "email") {
         const to = user?.email || recipientEmail;
-        if (!to) throw new Error("No email address for notification");
+        if (!to) {
+          throw new Error(
+            user
+              ? "No email address for notification"
+              : "User not found for email notification",
+          );
+        }
         const emailContent = rendered.email;
         if (!emailContent) throw new Error(`Template ${templateCode} has no email content`);
         const attachments = await materializeAttachments(emailContent.attachments, user);
@@ -98,7 +113,14 @@ async function handleNotificationJob(job) {
           text: emailContent.text,
           attachments,
         });
-        console.log("email result", result);
+        console.log(
+          JSON.stringify({
+            level: "info",
+            msg: "email sent",
+            to,
+            providerMessageId: result?.providerMessageId || null,
+          }),
+        );
         await writeLog({
           userId: userOid,
           event,
@@ -113,16 +135,7 @@ async function handleNotificationJob(job) {
         if (!pushContent) continue;
         const tokens = (user?.fcmTokens || []).map((t) => t.token).filter(Boolean);
         if (tokens.length === 0) {
-          await writeLog({
-            userId: userOid,
-            event,
-            templateCode,
-            channel,
-            status: "failed",
-            idempotencyKey: channelKey,
-            error: "No FCM tokens registered",
-          });
-          continue;
+          throw new Error(user ? "No FCM tokens registered" : "User not found for push notification");
         }
         const result = await pushProvider.send({ tokens, ...pushContent });
         if (result.invalidTokens?.length) {

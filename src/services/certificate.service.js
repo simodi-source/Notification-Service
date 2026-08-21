@@ -5,15 +5,27 @@
  *   gold page border, centered logo, title block, certificate info bar,
  *   certified owner, ownership detail grid, confirmation + authentication,
  *   legal footer.
+ *
+ * IMPORTANT: Prefer local, modestly-sized PNGs. The previous S3 watermark was
+ * 5020×8225 (~165MB decoded) and OOMed the PM2 worker (SIGKILL) on every buy
+ * trade that attached a certificate.
  */
+const fs = require("fs");
+const path = require("path");
 const https = require("https");
 const http = require("http");
 const PDFDocument = require("pdfkit");
 
+const ASSETS_DIR = path.join(__dirname, "..", "assets");
+const LOCAL_LOGO_PATH = path.join(ASSETS_DIR, "certificate-header.png");
+const LOCAL_WATERMARK_PATH = path.join(ASSETS_DIR, "certificate-watermark.png");
+
+/** Fallback only — keep small; never use the oversized S3 watermark. */
 const CERTIFICATE_LOGO_URL =
   "https://simodi-gold-bucket.s3.ap-south-1.amazonaws.com/uploads/profile_avatar/admin/6a3114a9c0774fb883089dc9/8be3ddef-d1dc-4ca2-ae82-b01c242ce6bf.png";
-const CERTIFICATE_WATERMARK_URL =
-  "https://simodi-gold-bucket.s3.ap-south-1.amazonaws.com/uploads/profile_avatar/admin/6a3114a9c0774fb883089dc9/2d5ea3bf-6857-4fd8-b1f2-d1005bc14980.png";
+
+/** Skip embedding any PNG whose decoded RGBA would exceed this (bytes). */
+const MAX_DECODED_PNG_BYTES = 25 * 1024 * 1024;
 
 const PAGE_W = 595.28;
 const PAGE_H = 841.89;
@@ -34,11 +46,20 @@ const MONTHS_FULL = [
 const METAL_LABEL = { gold: "Gold", silver: "Silver" };
 const PURITY_LABEL = { gold: ".999 fine", silver: ".999 fine" };
 
-/** @type {Map<string, Buffer>} */
+/** @type {Map<string, Buffer | null>} */
 const imageCache = new Map();
 
 function assertCertificateAssets() {
-  // Assets are fetched from S3 at render time; no local files required.
+  const missing = [LOCAL_LOGO_PATH, LOCAL_WATERMARK_PATH].filter((p) => !fs.existsSync(p));
+  if (missing.length) {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        msg: "certificate local assets missing; will try remote logo fallback",
+        missing,
+      }),
+    );
+  }
 }
 
 function fetchBuffer(url, redirectCount = 0) {
@@ -68,18 +89,88 @@ function fetchBuffer(url, redirectCount = 0) {
   });
 }
 
-async function loadImage(url) {
-  const cached = imageCache.get(url);
-  if (cached) return cached;
-  const buf = await fetchBuffer(url);
-  imageCache.set(url, buf);
-  return buf;
-}
-
 function pngSize(buf) {
   if (!Buffer.isBuffer(buf) || buf.length < 24) return null;
   if (buf[0] !== 0x89 || buf.toString("ascii", 1, 4) !== "PNG") return null;
   return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+}
+
+/** Reject PNGs that would explode RAM when PDFKit decodes them. */
+function assertSafePng(buf, label) {
+  const size = pngSize(buf);
+  if (!size) return buf;
+  const decoded = size.width * size.height * 4;
+  if (decoded > MAX_DECODED_PNG_BYTES) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        msg: "certificate asset too large; skipping to avoid OOM",
+        label,
+        width: size.width,
+        height: size.height,
+        decodedMB: Math.round(decoded / 1e6),
+      }),
+    );
+    return null;
+  }
+  return buf;
+}
+
+function loadLocalImage(filePath, label) {
+  const cached = imageCache.get(filePath);
+  if (cached !== undefined) return cached;
+  try {
+    if (!fs.existsSync(filePath)) {
+      imageCache.set(filePath, null);
+      return null;
+    }
+    const buf = assertSafePng(fs.readFileSync(filePath), label);
+    imageCache.set(filePath, buf);
+    return buf;
+  } catch (err) {
+    console.error(
+      JSON.stringify({
+        level: "warn",
+        msg: "failed to read local certificate asset",
+        label,
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
+    imageCache.set(filePath, null);
+    return null;
+  }
+}
+
+async function loadRemoteImage(url, label) {
+  const cached = imageCache.get(url);
+  if (cached !== undefined) return cached;
+  try {
+    const buf = assertSafePng(await fetchBuffer(url), label);
+    imageCache.set(url, buf);
+    return buf;
+  } catch (err) {
+    console.error(
+      JSON.stringify({
+        level: "warn",
+        msg: "failed to fetch certificate asset",
+        label,
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
+    imageCache.set(url, null);
+    return null;
+  }
+}
+
+async function loadCertificateImages() {
+  // Watermark must stay local — the old S3 asset is 5020×8225 and OOMs the worker.
+  const watermarkBuf = loadLocalImage(LOCAL_WATERMARK_PATH, "local-watermark");
+  // Prefer the square remote logo (safe ~3MB decode); fall back to local banner.
+  let logoBuf = await loadRemoteImage(CERTIFICATE_LOGO_URL, "remote-logo");
+  if (!logoBuf) {
+    logoBuf = loadLocalImage(LOCAL_LOGO_PATH, "local-logo-fallback");
+  }
+  return { logoBuf, watermarkBuf };
 }
 
 function toNumber(value) {
@@ -243,10 +334,7 @@ function drawAuthBox(doc, x, y, w, h, label, value) {
  * @returns {Promise<Buffer>}
  */
 async function buildCertificatePdf(input) {
-  const [logoBuf, watermarkBuf] = await Promise.all([
-    loadImage(CERTIFICATE_LOGO_URL),
-    loadImage(CERTIFICATE_WATERMARK_URL),
-  ]);
+  const { logoBuf, watermarkBuf } = await loadCertificateImages();
 
   const metalKey = input.metal === "silver" ? "silver" : "gold";
   const metalLabel = METAL_LABEL[metalKey];
@@ -297,23 +385,32 @@ async function buildCertificatePdf(input) {
 
     doc.save();
     doc.opacity(0.12);
-    const wmSize = pngSize(watermarkBuf);
-    const wmW = 260;
-    const wmH = wmSize && wmSize.width > 0 ? (wmW * wmSize.height) / wmSize.width : wmW;
-    try {
-      doc.image(watermarkBuf, contentX - 40, contentY - 20, { width: wmW, height: wmH });
-    } catch {
-      // Watermark is decorative; continue without it.
+    if (watermarkBuf) {
+      const wmSize = pngSize(watermarkBuf);
+      const wmW = 260;
+      const wmH = wmSize && wmSize.width > 0 ? (wmW * wmSize.height) / wmSize.width : wmW;
+      try {
+        doc.image(watermarkBuf, contentX - 40, contentY - 20, { width: wmW, height: wmH });
+      } catch {
+        // Watermark is decorative; continue without it.
+      }
     }
     doc.restore();
 
-    const logoSize = pngSize(logoBuf);
+    const logoSize = logoBuf ? pngSize(logoBuf) : null;
     const logoW = 120;
     const logoH = logoSize && logoSize.width > 0 ? (logoW * logoSize.height) / logoSize.width : 48;
     let y = contentY + 8;
-    try {
-      doc.image(logoBuf, contentX + (contentW - logoW) / 2, y, { width: logoW, height: logoH });
-    } catch {
+    if (logoBuf) {
+      try {
+        doc.image(logoBuf, contentX + (contentW - logoW) / 2, y, { width: logoW, height: logoH });
+      } catch {
+        doc.font("Helvetica-Bold").fontSize(16).fillColor(COLOR_GOLD).text("SIMODI GOLD", contentX, y, {
+          width: contentW,
+          align: "center",
+        });
+      }
+    } else {
       doc.font("Helvetica-Bold").fontSize(16).fillColor(COLOR_GOLD).text("SIMODI GOLD", contentX, y, {
         width: contentW,
         align: "center",
@@ -443,5 +540,4 @@ module.exports = {
   safeFilename,
   assertCertificateAssets,
   CERTIFICATE_LOGO_URL,
-  CERTIFICATE_WATERMARK_URL,
 };

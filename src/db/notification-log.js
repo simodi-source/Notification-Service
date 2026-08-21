@@ -26,6 +26,7 @@ const userSchema = new mongoose.Schema(
     mobile: String,
     firstName: String,
     lastName: String,
+    preferredLanguage: String,
     fcmTokens: [
       {
         token: { type: String, required: true },
@@ -40,10 +41,39 @@ const userSchema = new mongoose.Schema(
       whatsapp: { type: Boolean, default: false },
     },
   },
-  { collection: "users" },
+  // Shared backend collection — keep flexible so new user fields aren't stripped.
+  { collection: "users", strict: false },
 );
 
 const UserModel = mongoose.models.User || mongoose.model("User", userSchema);
+
+/**
+ * Load a notification recipient from the shared `users` collection.
+ * Uses the native driver so we never depend on schema casting for email / FCM tokens.
+ *
+ * @param {string | import("mongoose").Types.ObjectId} userId
+ * @returns {Promise<Record<string, any> | null>}
+ */
+async function findNotificationUser(userId) {
+  if (!userId || !mongoose.isValidObjectId(userId)) return null;
+  const oid = new mongoose.Types.ObjectId(String(userId));
+  const doc = await mongoose.connection.collection("users").findOne(
+    { _id: oid },
+    {
+      projection: {
+        email: 1,
+        countryCode: 1,
+        mobile: 1,
+        firstName: 1,
+        lastName: 1,
+        preferredLanguage: 1,
+        fcmTokens: 1,
+        notificationPreferences: 1,
+      },
+    },
+  );
+  return doc;
+}
 
 async function writeLog(entry) {
   const filter = entry.idempotencyKey
@@ -64,8 +94,8 @@ async function writeLog(entry) {
         error: entry.error,
       },
     },
-    { upsert: true, new: true },
+    { upsert: true, returnDocument: "after" },
   );
 }
 
-module.exports = { NotificationModel, UserModel, writeLog };
+module.exports = { NotificationModel, UserModel, writeLog, findNotificationUser };
