@@ -5,7 +5,9 @@ const emailProvider = require("./providers/email.bird");
 const pushProvider = require("./providers/push.fcm");
 const smsTwilioProvider = require("./providers/sms.twilio");
 const smsTelesomProvider = require("./providers/sms.telesom");
+const smsSomtelProvider = require("./providers/sms.somtel");
 const whatsappProvider = require("./providers/whatsapp.twilio");
+const { resolveMobileMoneySmsRoute } = require("./db/otp-challenge-lookup");
 const { buildCertificatePdf, safeFilename: certificateFilename } = require("./services/certificate.service");
 const {
   buildInvoicePdf,
@@ -165,7 +167,21 @@ async function handleNotificationJob(job) {
           "Simodi notification";
         let smsResult;
         if (event === "mobile_money.otp") {
-          smsResult = await smsTelesomProvider.send({ to: phone, body });
+          const route = await resolveMobileMoneySmsRoute(idempotencyKey);
+          console.log(
+            JSON.stringify({
+              level: "info",
+              msg: "sms_provider_selected",
+              smsProvider: route.smsProvider,
+              gateway: route.gateway,
+              event,
+            }),
+          );
+          if (route.smsProvider === "somtel") {
+            smsResult = await smsSomtelProvider.send({ to: phone, body });
+          } else {
+            smsResult = await smsTelesomProvider.send({ to: phone, body });
+          }
         } else {
           smsResult = await smsTwilioProvider.send({ to: phone, body });
         }

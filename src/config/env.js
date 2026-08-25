@@ -33,6 +33,13 @@ const env = {
   TELESOM_SHARED_SECRET: (process.env.TELESOM_SHARED_SECRET || "").trim(),
   /** Static client_ref sent on every Telesom Standard SMS request. */
   TELESOM_CLIENT_REF: (process.env.TELESOM_CLIENT_REF || "").trim() || "SIMODI-OTP",
+  /** Somtel SMS API (eDahab OTP). Optional at boot — fail at send time if unset. */
+  SOMTEL_BASE_URL:
+    (process.env.SOMTEL_BASE_URL || "").trim() || "https://smsapi.somtelsomalia.com",
+  SOMTEL_USERNAME: (process.env.SOMTEL_USERNAME || "").trim(),
+  SOMTEL_PASSWORD: (process.env.SOMTEL_PASSWORD || "").trim(),
+  SOMTEL_TOKEN_PATH: (process.env.SOMTEL_TOKEN_PATH || "").trim() || "/token",
+  SOMTEL_SEND_PATH: (process.env.SOMTEL_SEND_PATH || "").trim() || "/api/SendSMS",
   WORKER_CONCURRENCY: Number.parseInt(process.env.NOTIFICATION_WORKER_CONCURRENCY || "5", 10),
 };
 
