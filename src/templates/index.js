@@ -22,8 +22,10 @@ const EVENT_CHANNELS = {
   "wallet.deposit_approved": ["email", "push"],
   "wallet.deposit_rejected": ["email", "push"],
   "wallet.withdrawal_requested": ["email", "push"],
+  "wallet.withdrawal_processing": ["email", "push"],
   "wallet.withdrawal_paid": ["email", "push"],
   "wallet.withdrawal_failed": ["email", "push"],
+  "wallet.withdrawal_cancelled": ["email", "push"],
   "gift.sent": ["email", "push"],
   "gift.received": ["email", "push"],
   "mart.order.confirmed": ["email", "push"],
@@ -383,9 +385,17 @@ function renderTemplate(templateCode, payload, user, locale) {
     case "bank_verification_rejected": {
       const bankName = payload.bankName ? String(payload.bankName) : "Bank account";
       const accountLast4 = payload.accountLast4 ? String(payload.accountLast4) : null;
+      const reason = payload.reason ? String(payload.reason) : null;
       const title = "Simodi — Bank verification update";
       const rows = [{ label: "Bank", value: bankName }];
       if (accountLast4) rows.push({ label: "Account", value: `****${accountLast4}` });
+      if (reason) rows.push({ label: "Reason", value: reason });
+      const intro = reason
+        ? `We were unable to approve the bank account you submitted: ${reason}. Please open the Simodi app, review your bank details and proof document, then resubmit for verification.`
+        : "We were unable to approve the bank account you submitted. Please open the Simodi app, review your bank details and proof document, then resubmit for verification.";
+      const pushBody = reason
+        ? `We could not verify ${bankName}: ${reason}. Please review and resubmit in the app.`
+        : `We could not verify ${bankName}. Please review and resubmit in the app.`;
       return {
         email: {
           subject: title,
@@ -394,15 +404,14 @@ function renderTemplate(templateCode, payload, user, locale) {
             eyebrow: "Bank verification",
             heading: "We could not verify your bank account",
             name,
-            intro:
-              "We were unable to approve the bank account you submitted. Please open the Simodi app, review your bank details and proof document, then resubmit for verification.",
+            intro,
             callout: detailsCallout(rows),
             footnote: "Withdrawals require a verified bank account in your name.",
           }),
         },
         push: {
           title: "Bank verification update",
-          body: `We could not verify ${bankName}. Please review and resubmit in the app.`,
+          body: pushBody,
           data: {
             type: "bank.verification.rejected",
             bankVerificationId: String(payload.bankVerificationId || ""),
@@ -658,6 +667,38 @@ function renderTemplate(templateCode, payload, user, locale) {
         },
       };
     }
+    case "wallet_withdrawal_processing": {
+      const title = "Simodi — Your Withdrawal Request is Processing";
+      const payout = formatPayoutMajor(payload.payoutAmountMinor, payload.payoutCurrency);
+      const rows = [];
+      const humanRef = sanitizeHumanReference(payload.withdrawalId);
+      if (humanRef) rows.push({ label: "Reference", value: humanRef });
+      if (payout) rows.push({ label: "Amount", value: payout });
+      const body =
+        "Your Withdrawal Request is Processing, the amount will be credited within 12-24 hours.";
+      return {
+        email: {
+          subject: title,
+          html: brandedEmail({
+            title,
+            eyebrow: "Wallet update",
+            heading: "Your Withdrawal Request is Processing",
+            name,
+            intro: body,
+            callout: detailsCallout(rows),
+            footnote: "We will notify you once the payout is completed.",
+          }),
+        },
+        push: {
+          title: "Your Withdrawal Request is Processing",
+          body,
+          data: {
+            type: "wallet.withdrawal_processing",
+            withdrawalId: String(payload.withdrawalId || ""),
+          },
+        },
+      };
+    }
     case "wallet_withdrawal_failed": {
       const title = "Simodi — Withdrawal failed";
       const reason = payload.reason ? String(payload.reason) : null;
@@ -687,6 +728,40 @@ function renderTemplate(templateCode, payload, user, locale) {
             : "Your withdrawal could not be completed. Funds were returned to your wallet.",
           data: {
             type: "wallet.withdrawal_failed",
+            withdrawalId: String(payload.withdrawalId || ""),
+          },
+        },
+      };
+    }
+    case "wallet_withdrawal_cancelled": {
+      const title = "Simodi — Withdrawal cancelled";
+      const reason = payload.reason ? String(payload.reason) : null;
+      const rows = [];
+      const humanRef = sanitizeHumanReference(payload.withdrawalId);
+      if (humanRef) rows.push({ label: "Reference", value: humanRef });
+      if (reason) rows.push({ label: "Reason", value: reason });
+      return {
+        email: {
+          subject: title,
+          html: brandedEmail({
+            title,
+            eyebrow: "Wallet update",
+            heading: "Your withdrawal request was cancelled",
+            name,
+            intro: reason
+              ? `Your withdrawal request was cancelled: ${reason}. The amount has been returned to your Simodi wallet.`
+              : "Your withdrawal request was cancelled. The amount has been returned to your Simodi wallet.",
+            callout: detailsCallout(rows),
+            footnote: "You can review your wallet balance and try again from the Simodi app.",
+          }),
+        },
+        push: {
+          title: "Withdrawal cancelled",
+          body: reason
+            ? `Your withdrawal request was cancelled: ${reason}. Funds were returned to your wallet.`
+            : "Your withdrawal request was cancelled. Funds were returned to your wallet.",
+          data: {
+            type: "wallet.withdrawal_cancelled",
             withdrawalId: String(payload.withdrawalId || ""),
           },
         },
