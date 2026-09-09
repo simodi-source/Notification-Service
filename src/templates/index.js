@@ -34,10 +34,12 @@ const EVENT_CHANNELS = {
   "mart.order.delivered": ["email", "push"],
   "mart.order.cancelled": ["email", "push"],
   "admin.push.broadcast": ["push"],
+  "auth.session_replaced": ["push"],
   "admin.ops.bank_verification_pending": ["email"],
   "admin.ops.wallet_deposit_pending": ["email"],
   "admin.ops.wallet_withdrawal_pending": ["email"],
   "admin.ops.mart_order_new": ["email"],
+  "admin.ops.support_ticket_created": ["email"],
 };
 
 function escapeHtml(s) {
@@ -349,6 +351,17 @@ function renderTemplate(templateCode, payload, user, locale) {
           title: c.pushTitle,
           body: c.pushBody,
           data: { type: "kyc.rejected" },
+        },
+      };
+    }
+    case "auth_session_replaced": {
+      const c = i18n.auth_session_replaced;
+      return {
+        email: null,
+        push: {
+          title: c.pushTitle,
+          body: c.pushBody,
+          data: { type: "auth.session_replaced" },
         },
       };
     }
@@ -1116,6 +1129,30 @@ function renderTemplate(templateCode, payload, user, locale) {
           heading: "New paid mart order",
           name,
           intro: "A new Simodi Mart order has been paid and is ready for fulfilment.",
+          rows,
+          reviewUrl: payload.reviewUrl || null,
+        }),
+        push: null,
+      };
+    }
+    case "admin_support_ticket_created": {
+      const title = "Simodi Admin — New support ticket";
+      const rows = [
+        { label: "Name", value: `${String(payload.firstName || "")} ${String(payload.lastName || "")}`.trim() || "—" },
+        { label: "Email", value: String(payload.email || "—") },
+        { label: "Phone", value: String(payload.phone || "—") },
+        { label: "Subject", value: String(payload.subjectLabel || payload.subject || "—") },
+        { label: "Send offers", value: payload.sendOffer === true ? "Yes" : "No" },
+        { label: "Message", value: String(payload.message || "—") },
+        { label: "Reference", value: String(payload.ticketId || "—") },
+      ];
+      return {
+        email: adminOpsEmail({
+          title,
+          eyebrow: "Support",
+          heading: "New Get in Touch submission",
+          name,
+          intro: "A visitor submitted the support / Get in Touch form.",
           rows,
           reviewUrl: payload.reviewUrl || null,
         }),

@@ -62,6 +62,10 @@ const EN = {
     pushTitle: "KYC update required",
     pushBody: "Please retry identity verification in the app.",
   },
+  auth_session_replaced: {
+    pushTitle: "Signed in on another device",
+    pushBody: "Your Simodi account was signed in on another device. If this wasn't you, reset your password.",
+  },
 };
 
 const AR = {
@@ -125,6 +129,10 @@ const AR = {
     footnote: "حتى يكتمل التحقق، تبقى الإيداعات والتداول محدودة.",
     pushTitle: "مطلوب تحديث التحقق",
     pushBody: "يرجى إعادة محاولة التحقق من الهوية في التطبيق.",
+  },
+  auth_session_replaced: {
+    pushTitle: "تم تسجيل الدخول من جهاز آخر",
+    pushBody: "تم تسجيل الدخول إلى حساب سيمودي من جهاز آخر. إذا لم تكن أنت، أعد تعيين كلمة المرور.",
   },
 };
 
