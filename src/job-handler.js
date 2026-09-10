@@ -97,13 +97,10 @@ async function handleNotificationJob(job) {
       });
 
       if (channel === "email") {
-        const to = user?.email || recipientEmail;
+        const explicitTo = typeof recipientEmail === "string" ? recipientEmail.trim() : "";
+        const to = explicitTo || user?.email;
         if (!to) {
-          throw new Error(
-            user
-              ? "No email address for notification"
-              : "User not found for email notification",
-          );
+          throw new Error("No email address for notification");
         }
         const emailContent = rendered.email;
         if (!emailContent) throw new Error(`Template ${templateCode} has no email content`);

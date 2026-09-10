@@ -80,22 +80,21 @@ async function writeLog(entry) {
     ? { idempotencyKey: entry.idempotencyKey, channel: entry.channel }
     : { _id: new mongoose.Types.ObjectId() };
 
-  await NotificationModel.findOneAndUpdate(
-    filter,
-    {
-      $set: {
-        userId: entry.userId || undefined,
-        event: entry.event,
-        templateCode: entry.templateCode,
-        channel: entry.channel,
-        status: entry.status,
-        idempotencyKey: entry.idempotencyKey,
-        providerMessageId: entry.providerMessageId,
-        error: entry.error,
-      },
-    },
-    { upsert: true, returnDocument: "after" },
-  );
+  /** @type {Record<string, unknown>} */
+  const $set = {
+    event: entry.event,
+    templateCode: entry.templateCode,
+    channel: entry.channel,
+    status: entry.status,
+    idempotencyKey: entry.idempotencyKey,
+  };
+  if (entry.providerMessageId) $set.providerMessageId = entry.providerMessageId;
+  if (entry.error) $set.error = entry.error;
+  if (entry.userId && mongoose.isValidObjectId(entry.userId)) {
+    $set.userId = entry.userId;
+  }
+
+  await NotificationModel.findOneAndUpdate(filter, { $set }, { upsert: true, returnDocument: "after" });
 }
 
 module.exports = { NotificationModel, UserModel, writeLog, findNotificationUser };
