@@ -63,8 +63,8 @@ const EN = {
     pushBody: "Please retry identity verification in the app.",
   },
   auth_session_replaced: {
-    pushTitle: "Signed in on another device",
-    pushBody: "Your Simodi account was signed in on another device. If this wasn't you, reset your password.",
+    pushTitle: "Signed in on a new device",
+    pushBody: "Your Simodi account was signed in on a new device. If this wasn't you, reset your password.",
   },
 };
 
@@ -131,8 +131,8 @@ const AR = {
     pushBody: "يرجى إعادة محاولة التحقق من الهوية في التطبيق.",
   },
   auth_session_replaced: {
-    pushTitle: "تم تسجيل الدخول من جهاز آخر",
-    pushBody: "تم تسجيل الدخول إلى حساب سيمودي من جهاز آخر. إذا لم تكن أنت، أعد تعيين كلمة المرور.",
+    pushTitle: "تم تسجيل الدخول من جهاز جديد",
+    pushBody: "تم تسجيل الدخول إلى حساب سيمودي من جهاز جديد. إذا لم تكن أنت، أعد تعيين كلمة المرور.",
   },
 };
 
