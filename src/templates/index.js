@@ -258,6 +258,7 @@ function renderTemplate(templateCode, payload, user, locale) {
       const adminName = String(payload.adminName || "Admin");
       const adminEmail = String(payload.adminEmail || "");
       const adminRoles = String(payload.adminRoles || "Admin");
+      const otpCode = String(payload.otpCode || "");
       const title = c.subject(adminName, adminRoles);
       return {
         email: {
@@ -269,12 +270,42 @@ function renderTemplate(templateCode, payload, user, locale) {
             heading: c.heading,
             name: "Super Admin",
             intro: c.intro(adminName, adminEmail, adminRoles),
-            callout: otpCallout(String(payload.otpCode || ""), i18n.otpLabel),
+            callout: otpCallout(otpCode, i18n.otpLabel),
             paragraphs: [c.expires(OTP_EXPIRY_MINUTES)],
             footnote: c.footnote,
           }),
         },
         push: null,
+        slack: {
+          text: `Admin MFA OTP: ${otpCode}`,
+          blocks: [
+            {
+              type: "header",
+              text: { type: "plain_text", text: "Admin MFA OTP", emoji: true },
+            },
+            {
+              type: "section",
+              text: {
+                type: "mrkdwn",
+                text: [
+                  `*OTP:* \`${otpCode || "—"}\``,
+                  `*Name:* ${adminName}`,
+                  `*Email:* ${adminEmail || "—"}`,
+                  `*Roles:* ${adminRoles}`,
+                ].join("\n"),
+              },
+            },
+            {
+              type: "context",
+              elements: [
+                {
+                  type: "mrkdwn",
+                  text: `Expires in ${OTP_EXPIRY_MINUTES} minutes.`,
+                },
+              ],
+            },
+          ],
+        },
       };
     }
     case "wallet_withdrawal_otp": {
