@@ -5,7 +5,7 @@ const notificationSchema = new mongoose.Schema(
     userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", index: true },
     event: { type: String, required: true },
     templateCode: { type: String, required: true },
-    channel: { type: String, required: true, enum: ["email", "push", "sms", "whatsapp"] },
+    channel: { type: String, required: true, enum: ["email", "push", "sms", "whatsapp", "slack"] },
     status: { type: String, required: true, enum: ["queued", "sent", "failed"] },
     idempotencyKey: { type: String, index: true },
     providerMessageId: { type: String },

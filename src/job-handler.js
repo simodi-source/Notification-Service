@@ -1,3 +1,4 @@
+const { slackEnabledFor } = require("./config/env");
 const { mongoose } = require("./db/mongo");
 const { UserModel, writeLog, findNotificationUser } = require("./db/notification-log");
 const { EVENT_CHANNELS, renderTemplate } = require("./templates");
@@ -7,6 +8,7 @@ const smsTwilioProvider = require("./providers/sms.twilio");
 const smsTelesomProvider = require("./providers/sms.telesom");
 const smsSomtelProvider = require("./providers/sms.somtel");
 const whatsappProvider = require("./providers/whatsapp.twilio");
+const slackProvider = require("./providers/slack.webhook");
 const { resolveMobileMoneySmsRoute } = require("./db/otp-challenge-lookup");
 const { buildCertificatePdf, safeFilename: certificateFilename } = require("./services/certificate.service");
 const {
@@ -20,6 +22,15 @@ const { validateNotificationJob } = require("./queue/job-contract");
 
 /** OTP / transactional SMS must send even when user prefs.sms is false. */
 const FORCE_SMS_EVENTS = new Set(["mobile_money.otp"]);
+
+function resolveChannels(event, requestedChannels) {
+  const base = (requestedChannels?.length ? requestedChannels : EVENT_CHANNELS[event]) || ["email"];
+  const channels = [...base];
+  if (slackEnabledFor(event) && !channels.includes("slack")) {
+    channels.push("slack");
+  }
+  return channels;
+}
 
 /**
  * @param {import('bullmq').Job} job
@@ -59,9 +70,10 @@ async function handleNotificationJob(job) {
     whatsapp: false,
   };
 
-  const channels = (requestedChannels?.length ? requestedChannels : EVENT_CHANNELS[event]) || ["email"];
+  const channels = resolveChannels(event, requestedChannels);
   const forceSms = FORCE_SMS_EVENTS.has(event);
   const enabledChannels = channels.filter((ch) => {
+    if (ch === "slack") return slackEnabledFor(event);
     if (ch === "sms" && forceSms) return true;
     return prefs[ch] !== false;
   });
@@ -212,6 +224,22 @@ async function handleNotificationJob(job) {
           channel,
           status: "sent",
           idempotencyKey: channelKey,
+        });
+      } else if (channel === "slack") {
+        const slackContent = slackProvider.contentFromTemplate({
+          rendered,
+          templateCode,
+          payload: templatePayload,
+        });
+        const result = await slackProvider.send(slackContent);
+        await writeLog({
+          userId: userOid,
+          event,
+          templateCode,
+          channel,
+          status: "sent",
+          idempotencyKey: channelKey,
+          providerMessageId: result.providerMessageId,
         });
       }
     } catch (err) {

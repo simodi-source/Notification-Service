@@ -25,7 +25,18 @@ async function logHealth() {
 }
 
 async function main() {
-  console.log(JSON.stringify({ level: "info", msg: "notification-service starting", nodeEnv: env.NODE_ENV }));
+  console.log(
+    JSON.stringify({
+      level: "info",
+      msg: "notification-service starting",
+      nodeEnv: env.NODE_ENV,
+      slack:
+        env.NODE_ENV === "development" && env.SLACK_WEBHOOK_URL
+          ? "configured"
+          : "off",
+      slackEvents: env.NODE_ENV === "development" ? [...env.SLACK_EVENTS] : [],
+    }),
+  );
   assertCertificateAssets();
   await connectMongo();
   await logHealth();

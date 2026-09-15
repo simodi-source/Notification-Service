@@ -5,6 +5,19 @@ function required(name, value) {
   return value;
 }
 
+function parseEventList(value) {
+  return new Set(
+    String(value || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+}
+
+function isDevelopment() {
+  return (process.env.NODE_ENV || "development") === "development";
+}
+
 const env = {
   NODE_ENV: process.env.NODE_ENV || "development",
   REDIS_URL: required("REDIS_URL", process.env.REDIS_URL),
@@ -40,7 +53,15 @@ const env = {
   SOMTEL_PASSWORD: (process.env.SOMTEL_PASSWORD || "").trim(),
   SOMTEL_TOKEN_PATH: (process.env.SOMTEL_TOKEN_PATH || "").trim() || "/token",
   SOMTEL_SEND_PATH: (process.env.SOMTEL_SEND_PATH || "").trim() || "/api/SendSMS",
+
+  SLACK_WEBHOOK_URL: (process.env.SLACK_WEBHOOK_URL || "").trim(),
+  /** Comma-separated job event names that also post to Slack, e.g. `admin.mfa_otp`. */
+  SLACK_EVENTS: parseEventList(process.env.SLACK_EVENTS),
   WORKER_CONCURRENCY: Number.parseInt(process.env.NOTIFICATION_WORKER_CONCURRENCY || "5", 10),
 };
 
-module.exports = { env };
+function slackEnabledFor(event) {
+  return isDevelopment() && Boolean(env.SLACK_WEBHOOK_URL) && env.SLACK_EVENTS.has(event);
+}
+
+module.exports = { env, slackEnabledFor };
