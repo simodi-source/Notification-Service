@@ -277,11 +277,11 @@ function renderTemplate(templateCode, payload, user, locale) {
         },
         push: null,
         slack: {
-          text: `Admin MFA OTP: ${otpCode}`,
+          text: `Admin Panel Login Request: ${otpCode}`,
           blocks: [
             {
               type: "header",
-              text: { type: "plain_text", text: "Admin MFA OTP", emoji: true },
+              text: { type: "plain_text", text: `Admin Panel Login Request (${env.NODE_ENV})`, emoji: true },
             },
             {
               type: "section",
