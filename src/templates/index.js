@@ -40,6 +40,7 @@ const EVENT_CHANNELS = {
   "admin.ops.wallet_withdrawal_pending": ["email"],
   "admin.ops.mart_order_new": ["email"],
   "admin.ops.support_ticket_created": ["email"],
+  "ops.engineering_incident": ["slack"],
 };
 
 function escapeHtml(s) {
@@ -277,11 +278,15 @@ function renderTemplate(templateCode, payload, user, locale) {
         },
         push: null,
         slack: {
-          text: `Admin Panel Login Request: ${otpCode}`,
+          text: `Admin Panel Login Request: ${otpCode} (${env.NODE_ENV})`,
           blocks: [
             {
               type: "header",
-              text: { type: "plain_text", text: `Admin Panel Login Request (${env.NODE_ENV})`, emoji: true },
+              text: {
+                type: "plain_text",
+                text: `Admin Panel Login Request`,
+                emoji: true,
+              },
             },
             {
               type: "section",
@@ -292,19 +297,129 @@ function renderTemplate(templateCode, payload, user, locale) {
                   `*Name:* ${adminName}`,
                   `*Email:* ${adminEmail || "—"}`,
                   `*Roles:* ${adminRoles}`,
+                  `*Environment:* \`${env.NODE_ENV}\``,
                 ].join("\n"),
               },
             },
-            {
-              type: "context",
-              elements: [
-                {
-                  type: "mrkdwn",
-                  text: `Expires in ${OTP_EXPIRY_MINUTES} minutes.`,
-                },
-              ],
-            },
+           
           ],
+        },
+      };
+    }
+    case "engineering_incident": {
+      const title = String(payload.title || "Backend Exception");
+      const serviceName = String(payload.serviceName || "unknown");
+      const environment = String(payload.environment || env.NODE_ENV);
+      const timestamp = String(payload.timestamp || new Date().toISOString());
+      const errorMessage = String(payload.errorMessage || "Unknown error");
+      const stackSnippet = String(payload.stackSnippet || "").trim();
+      const trace = String(payload.trace || payload.correlationId || "n/a");
+      const method = String(payload.method || "").trim();
+      const endpointPath = String(payload.endpoint || payload.path || "").trim();
+      const code = String(payload.code || "").trim();
+      const category = String(payload.category || "").trim();
+      const occurrences = Number(payload.occurrences || 0);
+      const firstSeen = String(payload.firstSeen || "").trim();
+      const lastSeen = String(payload.lastSeen || "").trim();
+      const action = String(
+        payload.action || "Check the service logs using the correlation ID.",
+      ).trim();
+      const contextImageUrl = String(
+        payload.contextImageUrl || process.env.ENGINEERING_ALERT_CONTEXT_IMAGE_URL || "",
+      ).trim();
+
+      const endpointLine = [method, endpointPath].filter(Boolean).join(" ") || "—";
+
+      const blocks = [
+        {
+          type: "header",
+          text: {
+            type: "plain_text",
+            text: `Backend Exception`.slice(0, 140),
+            emoji: true,
+          },
+        },
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: [
+              `*Service:* ${serviceName}`,
+              `*Environment:* ${environment}`,
+              `*Time:* ${timestamp}`,
+              title && title !== "Backend Exception" ? `*Alert:* ${title}` : null,
+            ]
+              .filter(Boolean)
+              .join("\n"),
+          },
+        },
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `*Error:*\n${errorMessage.slice(0, 500)}${code ? `\n*Code:* \`${code}\`` : ""}${
+              category ? `\n*Category:* ${category}` : ""
+            }`,
+          },
+        },
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `*Endpoint:*\n\`${endpointLine}\``,
+          },
+        },
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `*Correlation ID:*\n\`${trace}\``,
+          },
+        },
+      ];
+
+      if (occurrences > 1 && firstSeen && lastSeen) {
+        blocks.push({
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `*Occurrences:* ${occurrences}\n*First seen:* ${firstSeen}\n*Last seen:* ${lastSeen}`,
+          },
+        });
+      }
+
+      if (stackSnippet) {
+        blocks.push({
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `*Stack trace:*\n\`\`\`${stackSnippet.slice(0, 2800)}\`\`\``,
+          },
+        });
+      }
+
+      blocks.push({
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: `*Action:*\n${action}`,
+        },
+      });
+
+      if (contextImageUrl) {
+        blocks.push({
+          type: "image",
+          image_url: contextImageUrl,
+          alt_text: "Error context reference (Trace)",
+        });
+      }
+
+      return {
+        email: null,
+        push: null,
+        slack: {
+          text: `Backend Exception | ${serviceName} | ${environment} | ${trace}`,
+          blocks,
         },
       };
     }
