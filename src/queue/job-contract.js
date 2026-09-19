@@ -27,7 +27,14 @@ function validateNotificationJob(data) {
     throw new Error("Invalid job: idempotencyKey is required");
   }
   if (!job.userId && !job.recipientEmail && !job.recipientPhone) {
-    throw new Error("Invalid job: userId, recipientEmail, or recipientPhone is required");
+    const channels = Array.isArray(job.channels) ? job.channels : [];
+    const event = typeof job.event === "string" ? job.event : "";
+    const isOpsSlackOnly =
+      event.startsWith("ops.") &&
+      (channels.includes("slack") || event === "ops.engineering_incident");
+    if (!isOpsSlackOnly) {
+      throw new Error("Invalid job: userId, recipientEmail, or recipientPhone is required");
+    }
   }
   if (job.payload !== undefined && (typeof job.payload !== "object" || job.payload === null)) {
     throw new Error("Invalid job: payload must be an object when provided");

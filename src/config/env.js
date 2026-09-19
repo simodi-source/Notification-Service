@@ -14,8 +14,76 @@ function parseEventList(value) {
   );
 }
 
-function isDevelopment() {
-  return (process.env.NODE_ENV || "development") === "development";
+function parseBool(value, defaultValue) {
+  if (value === undefined || value === "") return defaultValue;
+  if (typeof value === "boolean") return value;
+  const s = String(value).toLowerCase();
+  return s === "true" || s === "1" || s === "yes";
+}
+
+/**
+ * Parse SLACK_WEBHOOKS JSON map. Falls back to legacy SLACK_WEBHOOK_URL → admin_otp.
+ * @returns {Record<string, string>}
+ */
+function parseSlackWebhooks() {
+  /** @type {Record<string, string>} */
+  const map = {};
+  const raw = (process.env.SLACK_WEBHOOKS || "").trim();
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        for (const [key, value] of Object.entries(parsed)) {
+          if (typeof value === "string" && value.trim()) {
+            map[String(key).trim()] = value.trim();
+          }
+        }
+      }
+    } catch (err) {
+      console.error(
+        JSON.stringify({
+          level: "error",
+          msg: "Invalid SLACK_WEBHOOKS JSON; ignoring",
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    }
+  }
+  const legacy = (process.env.SLACK_WEBHOOK_URL || "").trim();
+  if (legacy && !map.admin_otp) {
+    map.admin_otp = legacy;
+  }
+  return map;
+}
+
+/** Default event → logical Slack channel name (same Slack app, different webhooks). */
+const DEFAULT_EVENT_CHANNELS = {
+  "admin.mfa_otp": "admin_otp",
+  "ops.engineering_incident": "engineering",
+};
+
+/**
+ * Optional JSON override: {"admin.mfa_otp":"admin_otp","ops.incident":"engineering"}
+ * @returns {Record<string, string>}
+ */
+function parseSlackEventChannels() {
+  const raw = (process.env.SLACK_EVENT_CHANNELS || "").trim();
+  if (!raw) return { ...DEFAULT_EVENT_CHANNELS };
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { ...DEFAULT_EVENT_CHANNELS, ...parsed };
+    }
+  } catch (err) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        msg: "Invalid SLACK_EVENT_CHANNELS JSON; using defaults",
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
+  }
+  return { ...DEFAULT_EVENT_CHANNELS };
 }
 
 const env = {
@@ -54,14 +122,63 @@ const env = {
   SOMTEL_TOKEN_PATH: (process.env.SOMTEL_TOKEN_PATH || "").trim() || "/token",
   SOMTEL_SEND_PATH: (process.env.SOMTEL_SEND_PATH || "").trim() || "/api/SendSMS",
 
+  /** Logical channel name → Incoming Webhook URL (one Slack app, many channels). */
+  SLACK_WEBHOOKS: parseSlackWebhooks(),
+  /** @deprecated Prefer SLACK_WEBHOOKS.admin_otp — kept for migration. */
   SLACK_WEBHOOK_URL: (process.env.SLACK_WEBHOOK_URL || "").trim(),
-  /** Comma-separated job event names that also post to Slack, e.g. `admin.mfa_otp`. */
+  /**
+   * Optional extra event allowlist. An event still needs an explicit
+   * SLACK_EVENT_CHANNELS mapping and webhook — never dumped onto admin_otp.
+   */
   SLACK_EVENTS: parseEventList(process.env.SLACK_EVENTS),
+  SLACK_EVENT_CHANNELS: parseSlackEventChannels(),
+  /**
+   * Toggle admin MFA OTP → Slack (`admin_otp` webhook).
+   * Delivery is also hard-blocked when NODE_ENV=production.
+   * NODE_ENV is still the environment label inside the Slack message.
+   * Default: true when SLACK_EVENTS includes admin.mfa_otp.
+   */
+  SLACK_ADMIN_OTP_ENABLED: parseBool(
+    process.env.SLACK_ADMIN_OTP_ENABLED,
+    parseEventList(process.env.SLACK_EVENTS).has("admin.mfa_otp"),
+  ),
+  /**
+   * Toggle Engineering incident Slack (`engineering` webhook).
+   * NODE_ENV is only a label in the message, not a delivery gate.
+   */
+  ENGINEERING_SLACK_ALERTS_ENABLED: parseBool(process.env.ENGINEERING_SLACK_ALERTS_ENABLED, false),
   WORKER_CONCURRENCY: Number.parseInt(process.env.NOTIFICATION_WORKER_CONCURRENCY || "5", 10),
 };
 
-function slackEnabledFor(event) {
-  return isDevelopment() && Boolean(env.SLACK_WEBHOOK_URL) && env.SLACK_EVENTS.has(event);
+function isAdminOtpSlackEnv() {
+  const n = String(env.NODE_ENV || "").toLowerCase();
+  return n === "development" || n === "test";
 }
 
-module.exports = { env, slackEnabledFor };
+/**
+ * Slack is only:
+ * - admin.mfa_otp → admin_otp webhook (admin panel login OTP; development/test only)
+ * - ops.engineering_incident → engineering webhook (all NODE_ENV values; NODE_ENV is the label)
+ * Anything else never posts to Slack.
+ */
+function slackEnabledFor(event) {
+  if (event === "admin.mfa_otp") {
+    return (
+      isAdminOtpSlackEnv() &&
+      env.SLACK_ADMIN_OTP_ENABLED &&
+      Boolean(env.SLACK_WEBHOOKS.admin_otp)
+    );
+  }
+  if (event === "ops.engineering_incident") {
+    return env.ENGINEERING_SLACK_ALERTS_ENABLED && Boolean(env.SLACK_WEBHOOKS.engineering);
+  }
+  return false;
+}
+
+function slackChannelForEvent(event) {
+  if (event === "admin.mfa_otp") return "admin_otp";
+  if (event === "ops.engineering_incident") return "engineering";
+  return null;
+}
+
+module.exports = { env, slackEnabledFor, slackChannelForEvent, isAdminOtpSlackEnv };

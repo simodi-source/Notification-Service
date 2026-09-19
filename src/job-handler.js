@@ -1,4 +1,4 @@
-const { slackEnabledFor } = require("./config/env");
+const { slackEnabledFor, slackChannelForEvent } = require("./config/env");
 const { mongoose } = require("./db/mongo");
 const { UserModel, writeLog, findNotificationUser } = require("./db/notification-log");
 const { EVENT_CHANNELS, renderTemplate } = require("./templates");
@@ -226,12 +226,27 @@ async function handleNotificationJob(job) {
           idempotencyKey: channelKey,
         });
       } else if (channel === "slack") {
+        const slackChannel = slackChannelForEvent(event);
+        if (!slackChannel) {
+          console.warn(
+            JSON.stringify({
+              level: "warn",
+              msg: "Slack skipped: event has no channel mapping",
+              event,
+            }),
+          );
+          continue;
+        }
         const slackContent = slackProvider.contentFromTemplate({
           rendered,
           templateCode,
           payload: templatePayload,
         });
-        const result = await slackProvider.send(slackContent);
+        const result = await slackProvider.send({
+          channel: slackChannel,
+          text: slackContent.text,
+          blocks: slackContent.blocks,
+        });
         await writeLog({
           userId: userOid,
           event,

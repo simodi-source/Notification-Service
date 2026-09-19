@@ -1,25 +1,32 @@
 const { env } = require("../config/env");
 
 const SLACK_TIMEOUT_MS = 5000;
+const SERVICE_NAME = "notification-service";
 
-function ensureConfigured() {
-  if (env.NODE_ENV !== "development") {
-    throw new Error("Slack is disabled outside NODE_ENV=development");
+/**
+ * @param {string} channel Logical channel name (e.g. admin_otp, engineering)
+ * @returns {string}
+ */
+function webhookFor(channel) {
+  const url = env.SLACK_WEBHOOKS?.[channel];
+  if (!url || !String(url).trim()) {
+    throw new Error(`Slack webhook not configured for channel "${channel}"`);
   }
-  if (!env.SLACK_WEBHOOK_URL) {
-    throw new Error("Slack is not configured (SLACK_WEBHOOK_URL)");
-  }
+  return String(url).trim();
 }
 
 /**
- * Generic Slack Incoming Webhook sender. Message body comes from templates
- * (`rendered.slack`); this module does not know about OTP or other events.
+ * Generic Slack Incoming Webhook sender for a named channel.
+ * Same Slack app can expose multiple webhooks (one per channel).
  *
- * @param {{ text: string, blocks?: unknown[] }} params
+ * @param {{ channel: string, text: string, blocks?: unknown[] }} params
  * @returns {Promise<{ providerMessageId: string }>}
  */
-async function send({ text, blocks }) {
-  ensureConfigured();
+async function send({ channel, text, blocks }) {
+  if (!channel || typeof channel !== "string") {
+    throw new Error("Slack send requires a channel name");
+  }
+  const webhookUrl = webhookFor(channel);
   const bodyText = typeof text === "string" && text.trim() ? text.trim() : "Simodi notification";
   const payload = { text: bodyText };
   if (Array.isArray(blocks) && blocks.length > 0) {
@@ -29,7 +36,7 @@ async function send({ text, blocks }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), SLACK_TIMEOUT_MS);
   try {
-    const res = await fetch(env.SLACK_WEBHOOK_URL, {
+    const res = await fetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -61,7 +68,10 @@ async function send({ text, blocks }) {
  * }} input
  */
 function contentFromTemplate({ rendered, templateCode, payload }) {
-  if (rendered?.slack && (rendered.slack.text || (Array.isArray(rendered.slack.blocks) && rendered.slack.blocks.length))) {
+  if (
+    rendered?.slack &&
+    (rendered.slack.text || (Array.isArray(rendered.slack.blocks) && rendered.slack.blocks.length))
+  ) {
     return rendered.slack;
   }
 
@@ -76,4 +86,64 @@ function contentFromTemplate({ rendered, templateCode, payload }) {
   return { text: text || title };
 }
 
-module.exports = { send, contentFromTemplate };
+/**
+ * Best-effort Engineering incident from the notification worker.
+ * Gated by ENGINEERING_SLACK_ALERTS_ENABLED + engineering webhook.
+ *
+ * @param {{ title: string, errorMessage: string, stack?: string }} input
+ */
+async function sendEngineeringIncident(input) {
+  if (!env.ENGINEERING_SLACK_ALERTS_ENABLED) return;
+  if (!env.SLACK_WEBHOOKS?.engineering) {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        msg: "Engineering Slack skipped: webhook not configured",
+      }),
+    );
+    return;
+  }
+  const timestamp = new Date().toISOString();
+  const text = [
+    input.title,
+    `*Service:* ${SERVICE_NAME}`,
+    `*Environment:* ${env.NODE_ENV}`,
+    `*Timestamp:* ${timestamp}`,
+    `*Error:* ${input.errorMessage}`,
+  ].join("\n");
+  const blocks = [
+    {
+      type: "header",
+      text: { type: "plain_text", text: String(input.title).slice(0, 140), emoji: true },
+    },
+    {
+      type: "section",
+      fields: [
+        { type: "mrkdwn", text: `*Service:*\n${SERVICE_NAME}` },
+        { type: "mrkdwn", text: `*Environment:*\n${env.NODE_ENV}` },
+        { type: "mrkdwn", text: `*Timestamp:*\n${timestamp}` },
+        { type: "mrkdwn", text: `*Error:*\n${String(input.errorMessage).slice(0, 500)}` },
+      ],
+    },
+  ];
+  if (input.stack) {
+    const snippet = String(input.stack).split("\n").slice(0, 15).join("\n");
+    blocks.push({
+      type: "section",
+      text: { type: "mrkdwn", text: `\`\`\`${snippet.slice(0, 2800)}\`\`\`` },
+    });
+  }
+  try {
+    await send({ channel: "engineering", text, blocks });
+  } catch (err) {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        msg: "Engineering Slack failed",
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
+  }
+}
+
+module.exports = { send, contentFromTemplate, sendEngineeringIncident, webhookFor };
