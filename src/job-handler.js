@@ -23,6 +23,12 @@ const { validateNotificationJob } = require("./queue/job-contract");
 /** OTP / transactional SMS must send even when user prefs.sms is false. */
 const FORCE_SMS_EVENTS = new Set(["mobile_money.otp"]);
 
+/** Admin-initiated broadcasts must deliver even when the user opted out of marketing prefs. */
+const FORCE_CHANNEL_EVENTS = new Set([
+  "admin.marketing.email",
+  "admin.push.broadcast",
+]);
+
 function resolveChannels(event, requestedChannels) {
   const base = (requestedChannels?.length ? requestedChannels : EVENT_CHANNELS[event]) || ["email"];
   const channels = [...base];
@@ -72,11 +78,19 @@ async function handleNotificationJob(job) {
 
   const channels = resolveChannels(event, requestedChannels);
   const forceSms = FORCE_SMS_EVENTS.has(event);
+  const forceDelivery = FORCE_CHANNEL_EVENTS.has(event);
   const enabledChannels = channels.filter((ch) => {
     if (ch === "slack") return slackEnabledFor(event);
     if (ch === "sms" && forceSms) return true;
+    if (forceDelivery && (ch === "email" || ch === "push")) return true;
     return prefs[ch] !== false;
   });
+
+  if (enabledChannels.length === 0) {
+    throw new Error(
+      `No enabled channels for event ${event} (requested: ${channels.join(", ") || "none"})`,
+    );
+  }
 
   // For trade confirmations, backfill price/total/date/reference from Mongo before
   // render so the branded email body matches the certificate attachment.
