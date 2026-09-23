@@ -158,9 +158,14 @@ async function handleNotificationJob(job) {
       } else if (channel === "push") {
         const pushContent = rendered.push;
         if (!pushContent) continue;
+        if (!user) {
+          throw new Error(
+            `User not found for push notification (userId=${userId || "none"}; check Notification-Service MongoDB connection)`,
+          );
+        }
         const tokens = (user?.fcmTokens || []).map((t) => t.token).filter(Boolean);
         if (tokens.length === 0) {
-          throw new Error(user ? "No FCM tokens registered" : "User not found for push notification");
+          throw new Error("No FCM tokens registered");
         }
         const result = await pushProvider.send({ tokens, ...pushContent });
         if (result.invalidTokens?.length) {
@@ -168,6 +173,9 @@ async function handleNotificationJob(job) {
             { _id: user._id },
             { $pull: { fcmTokens: { token: { $in: result.invalidTokens } } } },
           );
+        }
+        if (!result.providerMessageId && result.invalidTokens?.length === tokens.length) {
+          throw new Error("FCM rejected all device tokens");
         }
         await writeLog({
           userId: userOid,

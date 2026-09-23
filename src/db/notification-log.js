@@ -56,6 +56,11 @@ const UserModel = mongoose.models.User || mongoose.model("User", userSchema);
  */
 async function findNotificationUser(userId) {
   if (!userId || !mongoose.isValidObjectId(userId)) return null;
+  if (mongoose.connection.readyState !== 1) {
+    // 0=disconnected 2=connecting 3=disconnecting — wait briefly for worker startup races
+    await mongoose.connection.asPromise().catch(() => null);
+  }
+  if (mongoose.connection.readyState !== 1) return null;
   const oid = new mongoose.Types.ObjectId(String(userId));
   const doc = await mongoose.connection.collection("users").findOne(
     { _id: oid },

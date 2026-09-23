@@ -154,9 +154,12 @@ async function send(params) {
   const res = await admin.messaging().sendEachForMulticast(message);
 
   const invalidTokens = [];
+  const failureMessages = [];
   res.responses.forEach((r, i) => {
     if (!r.success) {
-      const code = r.error?.code;
+      const code = r.error?.code || "unknown";
+      const msg = r.error?.message || "FCM send failed";
+      failureMessages.push(`${code}: ${msg}`);
       if (
         code === "messaging/registration-token-not-registered" ||
         code === "messaging/invalid-registration-token"
@@ -165,6 +168,14 @@ async function send(params) {
       }
     }
   });
+
+  if (res.successCount === 0) {
+    throw new Error(
+      failureMessages[0]
+        ? `FCM delivery failed (${res.failureCount}/${tokens.length}): ${failureMessages[0]}`
+        : `FCM delivery failed for all ${tokens.length} token(s)`,
+    );
+  }
 
   return {
     providerMessageId: res.responses.find((r) => r.messageId)?.messageId,
