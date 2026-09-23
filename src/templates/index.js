@@ -34,6 +34,7 @@ const EVENT_CHANNELS = {
   "mart.order.delivered": ["email", "push"],
   "mart.order.cancelled": ["email", "push"],
   "admin.push.broadcast": ["push"],
+  "admin.marketing.email": ["email"],
   "auth.session_replaced": ["push"],
   "admin.ops.bank_verification_pending": ["email"],
   "admin.ops.wallet_deposit_pending": ["email"],
@@ -1348,6 +1349,32 @@ function renderTemplate(templateCode, payload, user, locale) {
           actionButton: resolvedAction.actionButton,
           richCampaign: true,
         },
+      };
+    }
+    case "admin_marketing_email": {
+      const subject = String(payload.subject || "Simodi");
+      const rawBody = String(payload.body || payload.htmlBody || "");
+      const paragraphs = rawBody
+        .split(/\n+/)
+        .map((p) => p.trim())
+        .filter(Boolean);
+      const intro = paragraphs[0] || "";
+      const rest = paragraphs.slice(1);
+      return {
+        email: {
+          subject,
+          html: brandedEmail({
+            ...emailLang,
+            title: subject,
+            eyebrow: lang === "ar" ? "تسويق" : "Marketing",
+            heading: subject,
+            name,
+            intro,
+            paragraphs: rest,
+          }),
+          text: rawBody || subject,
+        },
+        push: null,
       };
     }
     default:
