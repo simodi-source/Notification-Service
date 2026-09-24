@@ -52,6 +52,90 @@ function escapeHtml(s) {
     .replace(/"/g, "&quot;");
 }
 
+function sanitizeAdminHtml(html) {
+  return String(html || "")
+    .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "")
+    .replace(/<iframe[\s\S]*?>[\s\S]*?<\/iframe>/gi, "")
+    .replace(/<object[\s\S]*?>[\s\S]*?<\/object>/gi, "")
+    .replace(/<embed[\s\S]*?>/gi, "")
+    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/javascript:/gi, "")
+    .replace(/data:text\/html/gi, "");
+}
+
+function quillHtmlToEmailHtml(html) {
+  let out = sanitizeAdminHtml(html);
+
+  // Quill list UI chrome (not content)
+  out = out.replace(
+    /<span\b[^>]*\bclass\s*=\s*("[^"]*\bql-ui\b[^"]*"|'[^']*\bql-ui\b[^']*')[^>]*>\s*<\/span>/gi,
+    "",
+  );
+
+  const mergeStyle = (attrs, stylesToAdd) => {
+    if (!stylesToAdd.length) return attrs;
+    const styleMatch = attrs.match(/\sstyle\s*=\s*("([^"]*)"|'([^']*)')/i);
+    if (styleMatch) {
+      const existing = (styleMatch[2] ?? styleMatch[3] ?? "").trim();
+      const sep = existing && !existing.endsWith(";") ? ";" : "";
+      const merged = `${existing}${sep}${stylesToAdd.join(";")}`;
+      return attrs.replace(/\sstyle\s*=\s*("[^"]*"|'[^']*')/i, ` style="${merged}"`);
+    }
+    return `${attrs} style="${stylesToAdd.join(";")}"`;
+  };
+
+  out = out.replace(/<([a-z][a-z0-9]*)\b([^>]*)>/gi, (_full, tag, attrs) => {
+    let next = attrs;
+    const addStyles = [];
+
+    const classMatch = next.match(/\sclass\s*=\s*("([^"]*)"|'([^']*)')/i);
+    if (classMatch) {
+      const classVal = classMatch[2] ?? classMatch[3] ?? "";
+      const classes = classVal.split(/\s+/).filter(Boolean);
+      const keepClasses = [];
+
+      for (const c of classes) {
+        if (c === "ql-align-center") addStyles.push("text-align:center");
+        else if (c === "ql-align-right") addStyles.push("text-align:right");
+        else if (c === "ql-align-left") addStyles.push("text-align:left");
+        else if (c === "ql-align-justify") addStyles.push("text-align:justify");
+        else if (c === "ql-direction-rtl") addStyles.push("direction:rtl");
+        else if (c === "ql-direction-ltr") addStyles.push("direction:ltr");
+        else if (/^ql-indent-(\d+)$/.test(c)) {
+          addStyles.push(`padding-inline-start:${Number(RegExp.$1) * 3}em`);
+        } else if (!c.startsWith("ql-")) {
+          keepClasses.push(c);
+        }
+      }
+
+      if (keepClasses.length > 0) {
+        next = next.replace(/\sclass\s*=\s*("[^"]*"|'[^']*')/i, ` class="${keepClasses.join(" ")}"`);
+      } else {
+        next = next.replace(/\sclass\s*=\s*("[^"]*"|'[^']*')/i, "");
+      }
+    }
+
+    if (/^li$/i.test(tag) && /\bdata-list\s*=\s*["']bullet["']/i.test(attrs)) {
+      addStyles.push("list-style-type:disc", "display:list-item");
+    } else if (/^li$/i.test(tag) && /\bdata-list\s*=\s*["']ordered["']/i.test(attrs)) {
+      addStyles.push("list-style-type:decimal", "display:list-item");
+    }
+
+    if (/^(ol|ul)$/i.test(tag)) {
+      addStyles.push("margin:0 0 12px", "padding-inline-start:1.5em");
+    }
+
+    if (/^p$/i.test(tag)) {
+      addStyles.push("margin:0 0 12px");
+    }
+
+    next = mergeStyle(next, addStyles);
+    return `<${tag}${next}>`;
+  });
+
+  return out;
+}
+
 /**
  * Returns the value when it is a real human-readable trade reference
  * (e.g. "BUY00000123" or "SEL00000007"), and returns null when the value is
@@ -135,8 +219,10 @@ function detailsCallout(rows) {
  *   title: string,           // <title> tag and used in subject line by caller
  *   intro?: string,          // first paragraph
  *   paragraphs?: string[],   // additional body paragraphs
+ *   htmlBody?: string,       // trusted admin Quill HTML
  *   callout?: string,        // pre-rendered HTML block (OTP or details table)
  *   footnote?: string,       // small grey paragraph before signature
+ *   lang?: string,
  * }} params
  */
 function brandedEmail(params) {
@@ -144,6 +230,9 @@ function brandedEmail(params) {
   const extraParagraphs = (params.paragraphs || [])
     .map((p) => `<p style="margin:0 0 16px;font-size:15px;line-height:1.65;">${escapeHtml(p)}</p>`)
     .join("");
+  const richHtml = params.htmlBody
+    ? `<div style="margin:0 0 16px;font-size:15px;line-height:1.65;color:inherit;">${quillHtmlToEmailHtml(params.htmlBody)}</div>`
+    : "";
   const callout = params.callout || "";
   const footnote = params.footnote
     ? `<p style="margin:0 0 28px;font-size:13px;line-height:1.65;color:#777;">${escapeHtml(params.footnote)}</p>`
@@ -151,6 +240,7 @@ function brandedEmail(params) {
   const lang = params.lang === "ar" ? "ar" : "en";
   const dir = lang === "ar" ? "rtl" : "ltr";
   const align = lang === "ar" ? "right" : "left";
+  const hiLabel = lang === "ar" ? "مرحباً" : "Hi";
 
   return `<!DOCTYPE html>
 <html lang="${lang}" dir="${dir}">
@@ -166,12 +256,13 @@ function brandedEmail(params) {
         ${logoBlock()}
         <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#6b6b6b;text-transform:uppercase;letter-spacing:0.06em;">${escapeHtml(params.eyebrow)}</p>
         <p style="margin:0 0 28px;font-size:20px;font-weight:600;color:#111;line-height:1.3;">${escapeHtml(params.heading)}</p>
-        <p style="margin:0 0 16px;font-size:15px;line-height:1.65;">Hi ${escapeHtml(params.name)},</p>
+        <p style="margin:0 0 16px;font-size:15px;line-height:1.65;">${hiLabel} ${escapeHtml(params.name)},</p>
         ${intro}
+        ${richHtml}
         ${callout}
         ${extraParagraphs}
         ${footnote}
-        <p style="margin:0;font-size:15px;line-height:1.65;">Warm Regards,<br /><strong>The Simodi Team</strong></p>
+        <p style="margin:0;font-size:15px;line-height:1.65;">${lang === "ar" ? "مع أطيب التحيات،" : "Warm Regards,"}<br /><strong>${lang === "ar" ? "فريق Simodi" : "The Simodi Team"}</strong></p>
       </td>
     </tr>
   </table>
@@ -346,7 +437,7 @@ function renderTemplate(templateCode, payload, user, locale) {
             type: "mrkdwn",
             text: [
               `*Service:* ${serviceName}`,
-              `*Environment:* ${environment}`,
+              `*Environment:* \`${environment}\``,
               `*Time:* ${timestamp}`,
               title && title !== "Backend Exception" ? `*Alert:* ${title}` : null,
             ]
@@ -1354,6 +1445,32 @@ function renderTemplate(templateCode, payload, user, locale) {
     case "admin_marketing_email": {
       const subject = String(payload.subject || "Simodi");
       const rawBody = String(payload.body || payload.htmlBody || "");
+      const looksLikeHtml = /<[a-z][\s\S]*>/i.test(rawBody);
+      const plainText = rawBody
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;/gi, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      if (looksLikeHtml) {
+        return {
+          email: {
+            subject,
+            html: brandedEmail({
+              ...emailLang,
+              title: subject,
+              eyebrow: lang === "ar" ? "تسويق" : "Marketing",
+              heading: subject,
+              name,
+              htmlBody: rawBody,
+            }),
+            text: plainText || subject,
+          },
+          push: null,
+        };
+      }
+
+      // Legacy plain-text bodies
       const paragraphs = rawBody
         .split(/\n+/)
         .map((p) => p.trim())

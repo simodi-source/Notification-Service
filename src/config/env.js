@@ -106,7 +106,7 @@ const env = {
   BIRD_API_BASE_URL: (envVar("BIRD_API_BASE_URL") || "").trim(),
   MAIL_FROM: (envVar("MAIL_FROM") || "").trim(),
   MAIL_FROM_NAME: envVar("MAIL_FROM_NAME") || "Simodi",
-  MAIL_BRAND_LOGO_URL: envVar("MAIL_BRAND_LOGO_URL") || "",
+  MAIL_BRAND_LOGO_URL: (envVar("MAIL_BRAND_LOGO_URL") || "").trim(),
   /** Public S3/CDN origin for upload object keys in FCM rich-push images. */
   PUBLIC_UPLOADS_BASE_URL:
     envVar("PUBLIC_UPLOADS_BASE_URL") ||
