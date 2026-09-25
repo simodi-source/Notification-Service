@@ -107,7 +107,7 @@ async function sendEngineeringIncident(input) {
   const text = [
     input.title,
     `*Service:* ${SERVICE_NAME}`,
-    `*Environment:* ${env.NODE_ENV}`,
+    `*Environment:* \`${env.NODE_ENV}\``,
     `*Timestamp:* ${timestamp}`,
     `*Error:* ${input.errorMessage}`,
   ].join("\n");
@@ -120,7 +120,7 @@ async function sendEngineeringIncident(input) {
       type: "section",
       fields: [
         { type: "mrkdwn", text: `*Service:*\n${SERVICE_NAME}` },
-        { type: "mrkdwn", text: `*Environment:*\n${env.NODE_ENV}` },
+        { type: "mrkdwn", text: `*Environment:*\n\`${env.NODE_ENV}\`` },
         { type: "mrkdwn", text: `*Timestamp:*\n${timestamp}` },
         { type: "mrkdwn", text: `*Error:*\n${String(input.errorMessage).slice(0, 500)}` },
       ],
