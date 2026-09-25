@@ -296,7 +296,12 @@ async function handleNotificationJob(job) {
   }
 
   if (errors.length > 0 && errors.length === enabledChannels.length) {
-    throw new Error(`All channels failed: ${errors.map((e) => `${e.channel}: ${e.message}`).join("; ")}`);
+    if (errors.length === 1) {
+      throw new Error(errors[0].message);
+    }
+    throw new Error(
+      `All channels failed: ${errors.map((e) => `${e.channel}: ${e.message}`).join("; ")}`,
+    );
   }
 
   return smsDeliveryResult;
