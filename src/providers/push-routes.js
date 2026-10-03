@@ -4,6 +4,8 @@ const ROUTE_TO_CATEGORY = Object.freeze({
   "/sell": "SELL_CATEGORY",
   "/home": "OPEN_CATEGORY",
   "/mart": "SHOP_NOW_CATEGORY",
+  "/kyc": "OPEN_CATEGORY",
+  "/referral": "OPEN_CATEGORY",
 });
 
 /** Default action button label per category (mobile may also read `action_button` from FCM data). */
