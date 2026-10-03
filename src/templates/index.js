@@ -52,15 +52,106 @@ function escapeHtml(s) {
     .replace(/"/g, "&quot;");
 }
 
+/** Safe Quill → email tags. Text nodes are never escaped. */
+const QUILL_ALLOWED_TAGS = new Set([
+  "p",
+  "br",
+  "strong",
+  "b",
+  "em",
+  "i",
+  "u",
+  "s",
+  "strike",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "ul",
+  "ol",
+  "li",
+  "a",
+  "span",
+  "div",
+  "blockquote",
+  "sub",
+  "sup",
+  "pre",
+  "code",
+]);
+
+const QUILL_ALLOWED_ATTRS = new Set([
+  "href",
+  "target",
+  "rel",
+  "style",
+  "dir",
+  "class",
+  "align",
+  // Quill list markers (converted to list-style later)
+  "data-list",
+]);
+
+/**
+ * Sanitize Quill HTML for email injection.
+ * Keeps markup as HTML (does NOT entity-escape tags/text).
+ */
 function sanitizeAdminHtml(html) {
-  return String(html || "")
-    .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, "")
-    .replace(/<iframe[\s\S]*?>[\s\S]*?<\/iframe>/gi, "")
-    .replace(/<object[\s\S]*?>[\s\S]*?<\/object>/gi, "")
+  let out = String(html || "");
+
+  // Drop executable / foreign document blocks entirely
+  out = out
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<iframe[\s\S]*?<\/iframe>/gi, "")
+    .replace(/<object[\s\S]*?<\/object>/gi, "")
     .replace(/<embed[\s\S]*?>/gi, "")
-    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, "")
-    .replace(/javascript:/gi, "")
-    .replace(/data:text\/html/gi, "");
+    .replace(/<link[\s\S]*?>/gi, "")
+    .replace(/<meta[\s\S]*?>/gi, "");
+
+  // Allowlist tags; strip disallowed tags but keep their text content
+  out = out.replace(/<\/?([a-z][a-z0-9]*)\b([^>]*)>/gi, (match, tagName, attrs) => {
+    const tag = String(tagName).toLowerCase();
+    const isClose = match.startsWith("</");
+    if (!QUILL_ALLOWED_TAGS.has(tag)) return "";
+    if (isClose) return `</${tag}>`;
+    if (tag === "br") return "<br />";
+
+    const kept = [];
+    const attrRe = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))/g;
+    let m;
+    while ((m = attrRe.exec(String(attrs || ""))) !== null) {
+      const name = m[1].toLowerCase();
+      if (name.startsWith("on")) continue;
+      if (!QUILL_ALLOWED_ATTRS.has(name)) continue;
+      const value = m[3] ?? m[4] ?? m[5] ?? "";
+      if (name === "href" && /^\s*javascript:/i.test(value)) continue;
+      if (/data:\s*text\/html/i.test(value)) continue;
+      kept.push(`${name}="${String(value).replace(/"/g, "&quot;")}"`);
+    }
+    return kept.length ? `<${tag} ${kept.join(" ")}>` : `<${tag}>`;
+  });
+
+  return out;
+}
+
+function isFullEmailDocument(html) {
+  const s = String(html || "");
+  return (
+    /data-simodi-email\s*=\s*["']branded["']/i.test(s) ||
+    /<!DOCTYPE\s+html/i.test(s) ||
+    /<html[\s>]/i.test(s)
+  );
+}
+
+function htmlToPlainApprox(html) {
+  return String(html || "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function quillHtmlToEmailHtml(html) {
@@ -166,14 +257,13 @@ function formatPayoutMajor(amountMinor, currency) {
   return `${cur} ${(Number(amountMinor) / 100).toFixed(2)}`;
 }
 
+/** Same public logo used on certificates / ops-branded emails (reliable in Gmail). */
+const DEFAULT_BRAND_LOGO_URL =
+  "https://simodi-gold-bucket.s3.ap-south-1.amazonaws.com/uploads/profile_avatar/admin/6a3114a9c0774fb883089dc9/8be3ddef-d1dc-4ca2-ae82-b01c242ce6bf.png";
+
 function logoBlock() {
-  const logoUrl = env.MAIL_BRAND_LOGO_URL;
-  if (logoUrl) {
-    return `<img src="${escapeHtml(logoUrl)}" alt="Simodi" width="120" style="display:block;margin:0 0 20px;" />`;
-  }
-  return `<p style="margin:0 0 20px;font-size:18px;font-weight:600;color:#1a1a1a;letter-spacing:-0.02em;">
-         <span style="color:#B8941E;">Simodi</span>
-       </p>`;
+  const logoUrl = (env.MAIL_BRAND_LOGO_URL || DEFAULT_BRAND_LOGO_URL).trim() || DEFAULT_BRAND_LOGO_URL;
+  return `<img src="${escapeHtml(logoUrl)}" alt="SIMODI GOLD" width="120" style="display:block;margin:0 0 20px;border:0;outline:none;text-decoration:none;-ms-interpolation-mode:bicubic;max-width:120px;height:auto;" />`;
 }
 
 function otpCallout(code, otpLabel = "Your OTP Code") {
@@ -185,6 +275,68 @@ function otpCallout(code, otpLabel = "Your OTP Code") {
       </td>
     </tr>
   </table>`;
+}
+
+/**
+ * Gold accent bar as a real table cell (Gmail strips CSS border-* on many tables).
+ * @param {string} innerHtml trusted HTML
+ * @param {"en"|"ar"} lang
+ * @param {{ marginBottom?: string, pad?: string, bg?: string, barWidth?: number }} [opts]
+ */
+function goldRibbonPanel(innerHtml, lang, opts = {}) {
+  const isAr = lang === "ar";
+  const barW = opts.barWidth ?? 4;
+  const bg = opts.bg ?? "#ffffff";
+  const pad = opts.pad ?? "32px 36px 36px";
+  const marginBottom = opts.marginBottom ?? "0";
+  // Real gold <td>. Table is forced LTR so body direction:rtl cannot flip EN/AR ribbon sides.
+  const goldTd = `<td width="${barW}" bgcolor="#B8941E" valign="top" style="width:${barW}px;max-width:${barW}px;min-width:${barW}px;background-color:#B8941E;font-size:0;line-height:0;mso-line-height-rule:exactly;"><div style="width:${barW}px;min-height:40px;background-color:#B8941E;font-size:0;line-height:0;">&nbsp;</div></td>`;
+  const contentTd = `<td bgcolor="${bg}" valign="top" style="padding:${pad};font-size:15px;line-height:1.65;color:#242424;background-color:${bg};" dir="${isAr ? "rtl" : "ltr"}">${innerHtml}</td>`;
+  // EN: gold | content (left). AR: content | gold (right).
+  const cells = isAr ? `${contentTd}${goldTd}` : `${goldTd}${contentTd}`;
+  return `<table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" dir="ltr" style="margin:0 0 ${marginBottom};width:100%;border-collapse:collapse;table-layout:fixed;direction:ltr;">
+    <tr>${cells}</tr>
+  </table>`;
+}
+
+/**
+ * Inner grey Quill/callout panel + gold edge — same gold <td> ribbon as Operations Alert.
+ * Ribbon tables use dir=ltr so AR stays on the right.
+ */
+function marketingBodyPanel(innerHtml, lang) {
+  return goldRibbonPanel(innerHtml, lang, {
+    barWidth: 3,
+    bg: "#f7f7f7",
+    pad: "12px 20px",
+    marginBottom: "24px",
+  });
+}
+
+/**
+ * If a full branded document was queued/stored, pull only the campaign body fragment
+ * so we always re-wrap with the current shell (fixes stuck "old template" sends).
+ */
+function extractMarketingBodyFragment(html) {
+  const s = String(html || "");
+  if (!s.trim()) return null;
+
+  // Prefer inner content of a grey body panel when present
+  const greyPanel = s.match(
+    /bgcolor="#f7f7f7"[^>]*>([\s\S]*?)<\/td>\s*(?:<td[^>]*bgcolor="#B8941E"|<\/tr>)/i,
+  );
+  if (greyPanel && greyPanel[1] && /<[a-z]/i.test(greyPanel[1])) {
+    return greyPanel[1].trim();
+  }
+
+  // Content between greeting and signature inside an older shell
+  const between = s.match(
+    /(?:Hi|مرحباً)\s+[^,<]+[,،]\s*<\/p>\s*([\s\S]*?)<p[^>]*>\s*(?:Warm Regards|مع أطيب التحيات)/i,
+  );
+  if (between && between[1] && between[1].trim()) {
+    return between[1].trim();
+  }
+
+  return null;
 }
 
 /**
@@ -201,11 +353,8 @@ function detailsCallout(rows) {
       </tr>`,
     )
     .join("");
-  return `<table role="presentation" cellspacing="0" cellpadding="0" style="margin:0 0 24px;width:100%;background:#f7f7f7;border-left:3px solid #B8941E;">
-    <tr><td style="padding:12px 20px;">
-      <table role="presentation" cellspacing="0" cellpadding="0" style="width:100%;">${body}</table>
-    </td></tr>
-  </table>`;
+  const inner = `<table role="presentation" cellspacing="0" cellpadding="0" style="width:100%;">${body}</table>`;
+  return marketingBodyPanel(inner, "en");
 }
 
 /**
@@ -226,33 +375,29 @@ function detailsCallout(rows) {
  * }} params
  */
 function brandedEmail(params) {
+  // Guard: never nest a full email document inside the shell (duplicate logo/header/body).
+  if (params.htmlBody && isFullEmailDocument(params.htmlBody)) {
+    return String(params.htmlBody);
+  }
+
   const intro = params.intro ? `<p style="margin:0 0 16px;font-size:15px;line-height:1.65;">${escapeHtml(params.intro)}</p>` : "";
   const extraParagraphs = (params.paragraphs || [])
     .map((p) => `<p style="margin:0 0 16px;font-size:15px;line-height:1.65;">${escapeHtml(p)}</p>`)
     .join("");
+  const lang = params.lang === "ar" ? "ar" : "en";
+  const dir = lang === "ar" ? "rtl" : "ltr";
+  const align = lang === "ar" ? "right" : "left";
+  const hiLabel = lang === "ar" ? "مرحباً" : "Hi";
+  // Quill HTML injected ONCE into the existing shell body slot (never escapeHtml).
   const richHtml = params.htmlBody
-    ? `<div style="margin:0 0 16px;font-size:15px;line-height:1.65;color:inherit;">${quillHtmlToEmailHtml(params.htmlBody)}</div>`
+    ? marketingBodyPanel(quillHtmlToEmailHtml(params.htmlBody), lang)
     : "";
   const callout = params.callout || "";
   const footnote = params.footnote
     ? `<p style="margin:0 0 28px;font-size:13px;line-height:1.65;color:#777;">${escapeHtml(params.footnote)}</p>`
     : "";
-  const lang = params.lang === "ar" ? "ar" : "en";
-  const dir = lang === "ar" ? "rtl" : "ltr";
-  const align = lang === "ar" ? "right" : "left";
-  const hiLabel = lang === "ar" ? "مرحباً" : "Hi";
 
-  return `<!DOCTYPE html>
-<html lang="${lang}" dir="${dir}">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${escapeHtml(params.title)}</title>
-</head>
-<body style="margin:0;padding:32px 16px;background:#f0f0f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#242424;direction:${dir};text-align:${align};">
-  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:480px;margin:0 auto;">
-    <tr>
-      <td style="background:#ffffff;border-left:4px solid #B8941E;padding:32px 36px 36px;">
+  const cardInner = `
         ${logoBlock()}
         <p style="margin:0 0 8px;font-size:13px;font-weight:600;color:#6b6b6b;text-transform:uppercase;letter-spacing:0.06em;">${escapeHtml(params.eyebrow)}</p>
         <p style="margin:0 0 28px;font-size:20px;font-weight:600;color:#111;line-height:1.3;">${escapeHtml(params.heading)}</p>
@@ -262,7 +407,28 @@ function brandedEmail(params) {
         ${callout}
         ${extraParagraphs}
         ${footnote}
-        <p style="margin:0;font-size:15px;line-height:1.65;">${lang === "ar" ? "مع أطيب التحيات،" : "Warm Regards,"}<br /><strong>${lang === "ar" ? "فريق Simodi" : "The Simodi Team"}</strong></p>
+        <p style="margin:0;font-size:15px;line-height:1.65;">${lang === "ar" ? "مع أطيب التحيات،" : "Warm Regards,"}<br /><strong>${lang === "ar" ? "فريق Simodi" : "The Simodi Team"}</strong></p>`;
+
+  // Outer card gold ribbon (two-column cell — top-level, reliable in Gmail).
+  const cardHtml = goldRibbonPanel(cardInner, lang, {
+    barWidth: 4,
+    bg: "#ffffff",
+    pad: "32px 36px 36px",
+    marginBottom: "0",
+  });
+
+  return `<!DOCTYPE html>
+<html lang="${lang}" dir="${dir}">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>${escapeHtml(params.title)}</title>
+</head>
+<body style="margin:0;padding:32px 16px;background:#f0f0f0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#242424;direction:${dir};text-align:${align};">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:480px;margin:0 auto;border-collapse:collapse;">
+    <tr>
+      <td>
+        ${cardHtml}
       </td>
     </tr>
   </table>
@@ -1443,40 +1609,36 @@ function renderTemplate(templateCode, payload, user, locale) {
       };
     }
     case "admin_marketing_email": {
+      // Flow: Quill HTML → sanitize → inject ONCE into current brandedEmail shell → html:
       const subject = String(payload.subject || "Simodi");
-      const rawBody = String(payload.body || payload.htmlBody || "");
-      const looksLikeHtml = /<[a-z][\s\S]*>/i.test(rawBody);
-      const plainText = rawBody
-        .replace(/<[^>]+>/g, " ")
-        .replace(/&nbsp;/gi, " ")
-        .replace(/\s+/g, " ")
-        .trim();
+      let quillHtml = String(payload.body || payload.htmlBody || "").trim();
 
-      if (looksLikeHtml) {
-        return {
-          email: {
-            subject,
-            html: brandedEmail({
-              ...emailLang,
-              title: subject,
-              eyebrow: lang === "ar" ? "تسويق" : "Marketing",
-              heading: subject,
-              name,
-              htmlBody: rawBody,
-            }),
-            text: plainText || subject,
-          },
-          push: null,
-        };
+      // Old/full branded docs used to be sent as-is → recipients kept seeing the old shell
+      // (no body ribbon). Always extract the Quill fragment and re-wrap with the current shell.
+      if (isFullEmailDocument(quillHtml)) {
+        const extracted = extractMarketingBodyFragment(quillHtml);
+        if (extracted) {
+          quillHtml = extracted;
+        } else {
+          // Cannot safely extract — send once without a second wrap
+          return {
+            email: {
+              subject,
+              html: quillHtml,
+              text: htmlToPlainApprox(quillHtml) || subject,
+            },
+            push: null,
+          };
+        }
       }
 
-      // Legacy plain-text bodies
-      const paragraphs = rawBody
-        .split(/\n+/)
-        .map((p) => p.trim())
-        .filter(Boolean);
-      const intro = paragraphs[0] || "";
-      const rest = paragraphs.slice(1);
+      const looksLikeHtml = /<[a-z][\s\S]*>/i.test(quillHtml);
+      const fragment = looksLikeHtml
+        ? quillHtml
+        : quillHtml
+          ? `<p>${escapeHtml(quillHtml)}</p>`
+          : "<p>—</p>";
+
       return {
         email: {
           subject,
@@ -1486,10 +1648,9 @@ function renderTemplate(templateCode, payload, user, locale) {
             eyebrow: lang === "ar" ? "تسويق" : "Marketing",
             heading: subject,
             name,
-            intro,
-            paragraphs: rest,
+            htmlBody: fragment,
           }),
-          text: rawBody || subject,
+          text: htmlToPlainApprox(fragment) || subject,
         },
         push: null,
       };

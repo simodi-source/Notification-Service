@@ -106,7 +106,10 @@ const env = {
   BIRD_API_BASE_URL: (envVar("BIRD_API_BASE_URL") || "").trim(),
   MAIL_FROM: (envVar("MAIL_FROM") || "").trim(),
   MAIL_FROM_NAME: envVar("MAIL_FROM_NAME") || "Simodi",
-  MAIL_BRAND_LOGO_URL: (envVar("MAIL_BRAND_LOGO_URL") || "").trim(),
+  MAIL_BRAND_LOGO_URL: (
+    envVar("MAIL_BRAND_LOGO_URL") ||
+    "https://simodi-gold-bucket.s3.ap-south-1.amazonaws.com/uploads/profile_avatar/admin/6a3114a9c0774fb883089dc9/8be3ddef-d1dc-4ca2-ae82-b01c242ce6bf.png"
+  ).trim(),
   /** Public S3/CDN origin for upload object keys in FCM rich-push images. */
   PUBLIC_UPLOADS_BASE_URL:
     envVar("PUBLIC_UPLOADS_BASE_URL") ||
